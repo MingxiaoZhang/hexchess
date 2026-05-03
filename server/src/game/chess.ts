@@ -82,7 +82,7 @@ function pawnAttacks(piece: Piece): Position[] {
 
 // Attack squares: squares this piece threatens (used for check detection).
 // Pawns only threaten diagonals, not their forward squares.
-function getAttackSquares(
+export function getAttackSquares(
   state: Pick<GameState, 'board' | 'pieces'>,
   piece: Piece
 ): Position[] {
@@ -488,7 +488,11 @@ export function initGameState(config: GameConfig): GameState {
   const pieces: Record<string, Piece> = {};
 
   function place(id: string, type: PieceType, color: Color, row: number, col: number): void {
-    pieces[id] = { id, type, color, position: { row, col }, upgrades: [], hasMoved: false };
+    pieces[id] = {
+      id, type, color, position: { row, col },
+      upgrades: [], hasMoved: false,
+      triggerCount: 0, triggered: false,
+    };
     board[row][col] = id;
   }
 
@@ -511,5 +515,6 @@ export function initGameState(config: GameConfig): GameState {
     enPassantTarget: null,
     halfMoveClock: 0,
     capturedPieces: { byWhite: [], byBlack: [] },
+    mutationQueue: [],
   };
 }

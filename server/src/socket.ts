@@ -1,12 +1,18 @@
 import { Server, Socket } from 'socket.io';
 import {
+  AcceptMutationPayload,
   ChoosePromotionPayload,
   Color,
+  CreateRoomPayload,
+  DeclineMutationPayload,
   GameOverPayload,
   GameStartPayload,
   JoinRoomPayload,
   MakeMovePayload,
+  MutationAvailablePayload,
+  MutationOutcomePayload,
   MoveResultPayload,
+  MutationPending,
   Position,
   PromotionRequiredPayload,
   RoomCreatedPayload,
@@ -17,6 +23,7 @@ import {
   Room,
   addPlayer,
   clearMoveTimer,
+  clearMutationTimer,
   clearPromotionTimer,
   clearReconnectTimer,
   createRoom,
@@ -31,10 +38,15 @@ import {
   applyDisconnectWin,
   applyTimeout,
   handleMove,
+  handleMutationAccept,
+  handleMutationDecline,
+  handleMutationTimeout,
   handlePromotion,
   handlePromotionTimeout,
   sanitizeStateForPlayer,
 } from './game/state';
+import { chooseAIMove } from './game/ai';
+import { triggerDescription } from './game/triggers';
 
 export function registerSocketHandlers(io: Server): void {
   io.on('connection', (socket: Socket) => {
@@ -42,7 +54,7 @@ export function registerSocketHandlers(io: Server): void {
 
     // ---- Room lifecycle ----
 
-    socket.on('create_room', (callback: (payload: RoomCreatedPayload) => void) => {
+    socket.on('create_room', ({ vsAI = false }: CreateRoomPayload = {}, callback: (p: RoomCreatedPayload) => void) => {
       const room = createRoom();
       const color = addPlayer(room, socket.id);
       if (!color) return;
@@ -50,20 +62,26 @@ export function registerSocketHandlers(io: Server): void {
       socket.join(room.id);
       const origin = process.env['CLIENT_ORIGIN'] ?? 'http://localhost:5173';
       const shareUrl = `${origin}/?room=${room.id}`;
-      console.log(`[room] created ${room.id} by ${socket.id}`);
-      callback({ roomId: room.id, shareUrl });
+      console.log(`[room] created ${room.id} by ${socket.id} vsAI=${vsAI}`);
+
+      if (vsAI) {
+        room.hasAI = true;
+        room.aiColor = color === 'white' ? 'black' : 'white';
+        startGameInRoom(io, room);
+      }
+
+      callback({ roomId: room.id, shareUrl, vsAI });
     });
 
     socket.on('join_room', ({ roomId }: JoinRoomPayload, callback?: (err?: string) => void) => {
       const room = getRoom(roomId);
-
       if (!room) {
         if (callback) callback('Room not found');
         socket.emit('error_msg', { message: 'Room not found' });
         return;
       }
 
-      // Check if this socket is reconnecting
+      // Reconnection check
       const existing = findPlayerInRoom(room, socket.id);
       if (existing) {
         existing.connected = true;
@@ -81,25 +99,11 @@ export function registerSocketHandlers(io: Server): void {
 
       const color = addPlayer(room, socket.id);
       if (!color) return;
-
       socket.join(room.id);
       console.log(`[room] ${socket.id} joined ${room.id} as ${color}`);
       if (callback) callback();
 
-      // Both players now present — start the game
-      if (isFull(room)) {
-        room.state = { ...room.state, phase: 'active' };
-
-        for (const player of room.players) {
-          const payload: GameStartPayload = {
-            gameState: sanitizeStateForPlayer(room.state, player.color),
-            yourColor: player.color,
-          };
-          io.to(player.socketId).emit('game_start', payload);
-        }
-
-        startMoveTimer(io, room);
-      }
+      if (isFull(room)) startGameInRoom(io, room);
     });
 
     // ---- Move handling ----
@@ -107,25 +111,20 @@ export function registerSocketHandlers(io: Server): void {
     socket.on('make_move', ({ roomId, pieceId, to }: MakeMovePayload) => {
       const room = getRoom(roomId);
       if (!room) return;
-
       const player = findPlayerInRoom(room, socket.id);
       if (!player) return;
 
       const outcome = handleMove(room.state, pieceId, to as Position, player.color);
-      if (!outcome) {
-        socket.emit('error_msg', { message: 'Illegal move' });
-        return;
-      }
+      if (!outcome) { socket.emit('error_msg', { message: 'Illegal move' }); return; }
 
       room.state = outcome.newState;
       clearMoveTimer(room);
 
-      const payload: MoveResultPayload = {
+      io.to(roomId).emit('move_result', {
         gameState: room.state,
         move: outcome.move,
         atomic: outcome.atomic,
-      };
-      io.to(roomId).emit('move_result', payload);
+      } satisfies MoveResultPayload);
 
       if (outcome.gameOver) {
         broadcastGameOver(io, room, outcome.winner, outcome.reason ?? 'checkmate');
@@ -134,63 +133,77 @@ export function registerSocketHandlers(io: Server): void {
 
       if (outcome.promotionRequired) {
         startPromotionTimer(io, room, player.color);
-        const promPayload: PromotionRequiredPayload = {
+        socket.emit('promotion_required', {
           pieceId,
           upgradeOptions: outcome.upgradeOptions,
-        };
-        socket.emit('promotion_required', promPayload);
+        } satisfies PromotionRequiredPayload);
         return;
       }
 
+      if (outcome.newTriggers.length > 0) {
+        processMutationQueue(io, room);
+        return;
+      }
+
+      scheduleAIMoveIfNeeded(io, room);
       startMoveTimer(io, room);
     });
 
-    // ---- Promotion choice ----
+    // ---- Promotion ----
 
     socket.on('choose_promotion', ({ roomId, pieceType, upgradeId }: ChoosePromotionPayload) => {
       const room = getRoom(roomId);
       if (!room || !room.state.promotionPending) return;
-
       const player = findPlayerInRoom(room, socket.id);
       if (!player) return;
 
       clearPromotionTimer(room);
-
       const outcome = handlePromotion(
-        room.state,
-        room.state.promotionPending.pieceId,
-        pieceType,
-        upgradeId,
-        player.color
+        room.state, room.state.promotionPending.pieceId, pieceType, upgradeId, player.color
       );
       if (!outcome) return;
 
       room.state = outcome.newState;
-
-      const fallbackMove = {
-        pieceId: room.state.promotionPending?.pieceId ?? '',
-        from: { row: 0, col: 0 },
-        to: { row: 0, col: 0 },
-      };
-      io.to(roomId).emit('move_result', {
-        gameState: room.state,
-        move: room.state.lastMove ?? fallbackMove,
-        atomic: false,
-      } satisfies MoveResultPayload);
+      emitMoveResult(io, room);
 
       if (outcome.gameOver) {
         broadcastGameOver(io, room, outcome.winner, outcome.reason ?? 'checkmate');
         return;
       }
 
+      if (outcome.newTriggers.length > 0) {
+        processMutationQueue(io, room);
+        return;
+      }
+
+      scheduleAIMoveIfNeeded(io, room);
       startMoveTimer(io, room);
+    });
+
+    // ---- Mutation accept / decline ----
+
+    socket.on('accept_mutation', ({ roomId, pieceId, mutationId }: AcceptMutationPayload) => {
+      const room = getRoom(roomId);
+      if (!room) return;
+      const player = findPlayerInRoom(room, socket.id);
+      if (!player) return;
+
+      applyMutationAccept(io, room, pieceId, mutationId, player.color);
+    });
+
+    socket.on('decline_mutation', ({ roomId, pieceId }: DeclineMutationPayload) => {
+      const room = getRoom(roomId);
+      if (!room) return;
+      const player = findPlayerInRoom(room, socket.id);
+      if (!player) return;
+
+      applyMutationDecline(io, room, pieceId, player.color);
     });
 
     // ---- Disconnection ----
 
     socket.on('disconnect', () => {
       console.log(`[socket] disconnected: ${socket.id}`);
-
       const found = findRoomBySocketId(socket.id);
       if (!found) return;
       const [roomId, room] = found;
@@ -198,7 +211,13 @@ export function registerSocketHandlers(io: Server): void {
       const player = findPlayerInRoom(room, socket.id);
       if (!player) return;
 
-      if (room.state.phase === 'complete') {
+      if (room.state.phase === 'complete') { maybeCleanupRoom(roomId, room); return; }
+
+      // In AI games, disconnection immediately ends the game
+      if (room.hasAI) {
+        clearMoveTimer(room);
+        room.state = applyDisconnectWin(room.state, player.color);
+        broadcastGameOver(io, room, room.state.winner ?? null, 'disconnect');
         maybeCleanupRoom(roomId, room);
         return;
       }
@@ -211,6 +230,7 @@ export function registerSocketHandlers(io: Server): void {
         if (room.state.phase !== 'complete') {
           clearMoveTimer(room);
           clearPromotionTimer(room);
+          clearMutationTimer(room);
           room.state = applyDisconnectWin(room.state, player.color);
           broadcastGameOver(io, room, room.state.winner ?? null, 'disconnect');
         }
@@ -221,10 +241,185 @@ export function registerSocketHandlers(io: Server): void {
   });
 }
 
+// ---- Game start ----
+
+function startGameInRoom(io: Server, room: Room): void {
+  room.state = { ...room.state, phase: 'active' };
+
+  for (const player of room.players) {
+    const payload: GameStartPayload = {
+      gameState: sanitizeStateForPlayer(room.state, player.color),
+      yourColor: player.color,
+      vsAI: room.hasAI,
+    };
+    io.to(player.socketId).emit('game_start', payload);
+  }
+
+  scheduleAIMoveIfNeeded(io, room);
+  startMoveTimer(io, room);
+}
+
+// ---- Mutation processing ----
+
+function processMutationQueue(io: Server, room: Room): void {
+  const current = room.state.mutationQueue[0];
+  if (!current) {
+    // Queue drained — resume game
+    scheduleAIMoveIfNeeded(io, room);
+    startMoveTimer(io, room);
+    return;
+  }
+
+  // Is this mutation for the AI? Auto-accept immediately.
+  if (room.hasAI && room.aiColor === current.ownerColor) {
+    applyMutationAccept(io, room, current.pieceId, current.mutations[0]?.id ?? '', current.ownerColor);
+    return;
+  }
+
+  // Send offer to owning player only
+  const ownerSocket = room.players.find(p => p.color === current.ownerColor);
+  if (ownerSocket) {
+    io.to(ownerSocket.socketId).emit('mutation_available', {
+      pieceId: current.pieceId,
+      pieceType: current.pieceType,
+      triggerType: current.triggerType,
+      mutations: current.mutations,
+    } satisfies MutationAvailablePayload);
+  }
+
+  startMutationTimer(io, room, current);
+}
+
+function applyMutationAccept(
+  io: Server,
+  room: Room,
+  pieceId: string,
+  mutationId: string,
+  ownerColor: Color
+): void {
+  clearMutationTimer(room);
+  const current = room.state.mutationQueue[0];
+  if (!current || current.pieceId !== pieceId) return;
+
+  const outcome = handleMutationAccept(room.state, pieceId, mutationId, ownerColor);
+  if (!outcome) return;
+
+  room.state = outcome.newState;
+
+  io.to(room.id).emit('mutation_outcome', {
+    pieceId,
+    pieceType: current.pieceType,
+    accepted: true,
+    mutationId,
+    mutationName: current.mutations.find(m => m.id === mutationId)?.name,
+    ownerColor,
+  } satisfies MutationOutcomePayload);
+
+  emitMoveResult(io, room);
+
+  if (outcome.gameOver) { broadcastGameOver(io, room, outcome.winner, outcome.reason ?? 'checkmate'); return; }
+  if (outcome.nextMutation) { processMutationQueue(io, room); return; }
+
+  scheduleAIMoveIfNeeded(io, room);
+  startMoveTimer(io, room);
+}
+
+function applyMutationDecline(
+  io: Server,
+  room: Room,
+  pieceId: string,
+  ownerColor: Color
+): void {
+  clearMutationTimer(room);
+  const current = room.state.mutationQueue[0];
+  if (!current || current.pieceId !== pieceId) return;
+
+  const outcome = handleMutationDecline(room.state, pieceId, ownerColor);
+  if (!outcome) return;
+
+  room.state = outcome.newState;
+
+  io.to(room.id).emit('mutation_outcome', {
+    pieceId,
+    pieceType: current.pieceType,
+    accepted: false,
+    ownerColor,
+  } satisfies MutationOutcomePayload);
+
+  emitMoveResult(io, room);
+
+  if (outcome.gameOver) { broadcastGameOver(io, room, outcome.winner, outcome.reason ?? 'checkmate'); return; }
+  if (outcome.nextMutation) { processMutationQueue(io, room); return; }
+
+  scheduleAIMoveIfNeeded(io, room);
+  startMoveTimer(io, room);
+}
+
+// ---- AI move scheduling ----
+
+function scheduleAIMoveIfNeeded(io: Server, room: Room): void {
+  if (!room.hasAI || room.state.phase !== 'active') return;
+  if (room.state.currentTurn !== room.aiColor) return;
+
+  // Small delay so the board update renders before AI moves
+  setTimeout(() => {
+    if (room.state.phase !== 'active' || room.state.currentTurn !== room.aiColor) return;
+    triggerAIMove(io, room);
+  }, 600 + Math.random() * 400);
+}
+
+function triggerAIMove(io: Server, room: Room): void {
+  const aiColor = room.aiColor;
+  if (!aiColor) return;
+
+  const aiMove = chooseAIMove(room.state, aiColor);
+  if (!aiMove) return; // no legal moves — game over check will handle it
+
+  const outcome = handleMove(room.state, aiMove.pieceId, aiMove.to, aiColor);
+  if (!outcome) return;
+
+  room.state = outcome.newState;
+  clearMoveTimer(room);
+
+  io.to(room.id).emit('move_result', {
+    gameState: room.state,
+    move: outcome.move,
+    atomic: outcome.atomic,
+  } satisfies MoveResultPayload);
+
+  if (outcome.gameOver) { broadcastGameOver(io, room, outcome.winner, outcome.reason ?? 'checkmate'); return; }
+
+  if (outcome.promotionRequired) {
+    // AI always picks queen + first upgrade
+    const promotionState = outcome.newState;
+    const pending = promotionState.promotionPending;
+    if (pending) {
+      const promoOutcome = handlePromotion(
+        promotionState, pending.pieceId, 'queen',
+        pending.upgradeOptions[0]?.id ?? null, aiColor
+      );
+      if (promoOutcome) {
+        room.state = promoOutcome.newState;
+        emitMoveResult(io, room);
+        if (promoOutcome.gameOver) { broadcastGameOver(io, room, promoOutcome.winner, promoOutcome.reason ?? 'checkmate'); return; }
+        if (promoOutcome.newTriggers.length > 0) { processMutationQueue(io, room); return; }
+      }
+    }
+    scheduleAIMoveIfNeeded(io, room); // shouldn't be AI's turn again after promoting
+    return; // human's turn now (or mutation pending)
+  }
+
+  if (outcome.newTriggers.length > 0) { processMutationQueue(io, room); return; }
+
+  startMoveTimer(io, room);
+  // Note: after AI moves it's now human's turn — no need to schedule AI again yet.
+}
+
 // ---- Timer helpers ----
 
 function startMoveTimer(io: Server, room: Room): void {
   clearMoveTimer(room);
+  if (room.state.phase !== 'active') return;
 
   const seconds = room.state.timerConfig.moveTimerSeconds;
   room.secondsRemaining = seconds;
@@ -234,23 +429,22 @@ function startMoveTimer(io: Server, room: Room): void {
     const elapsed = Math.floor((Date.now() - (room.moveTimerStartedAt ?? Date.now())) / 1000);
     room.secondsRemaining = Math.max(0, seconds - elapsed);
 
-    const payload: TimerUpdatePayload = {
+    io.to(room.id).emit('timer_update', {
       secondsRemaining: room.secondsRemaining,
       color: room.state.currentTurn,
-    };
-    io.to(room.id).emit('timer_update', payload);
+    } satisfies TimerUpdatePayload);
 
     if (room.secondsRemaining <= 0) {
-      const timedOutColor = room.state.currentTurn;
       clearMoveTimer(room);
+      const timedOutColor = room.state.currentTurn;
+      // AI gets unlimited time (shouldn't time out but guard anyway)
+      if (room.hasAI && timedOutColor === room.aiColor) return;
       room.state = applyTimeout(room.state, timedOutColor);
       broadcastGameOver(io, room, room.state.winner ?? null, 'timeout');
       return;
     }
-
     room.moveTimer = setTimeout(tick, 1000);
   };
-
   room.moveTimer = setTimeout(tick, 1000);
 }
 
@@ -260,22 +454,46 @@ function startPromotionTimer(io: Server, room: Room, promotingColor: Color): voi
     if (room.state.phase !== 'promotion') return;
     const outcome = handlePromotionTimeout(room.state, promotingColor);
     if (!outcome) return;
-
     room.state = outcome.newState;
-    const fallbackMove = { pieceId: '', from: { row: 0, col: 0 }, to: { row: 0, col: 0 } };
-    io.to(room.id).emit('move_result', {
-      gameState: room.state,
-      move: room.state.lastMove ?? fallbackMove,
-      atomic: false,
-    } satisfies MoveResultPayload);
-
-    if (outcome.gameOver) {
-      broadcastGameOver(io, room, outcome.winner, outcome.reason ?? 'checkmate');
-      return;
-    }
-
+    emitMoveResult(io, room);
+    if (outcome.gameOver) { broadcastGameOver(io, room, outcome.winner, outcome.reason ?? 'checkmate'); return; }
+    if (outcome.newTriggers.length > 0) { processMutationQueue(io, room); return; }
+    scheduleAIMoveIfNeeded(io, room);
     startMoveTimer(io, room);
   }, 30_000);
+}
+
+function startMutationTimer(io: Server, room: Room, mutation: MutationPending): void {
+  clearMutationTimer(room);
+  room.mutationTimer = setTimeout(() => {
+    if (room.state.phase !== 'mutation') return;
+    console.log(`[mutation] timer expired for ${mutation.pieceId} — auto-decline`);
+    const outcome = handleMutationTimeout(room.state);
+    if (!outcome) return;
+    room.state = outcome.newState;
+    io.to(room.id).emit('mutation_outcome', {
+      pieceId: mutation.pieceId,
+      pieceType: mutation.pieceType,
+      accepted: false,
+      ownerColor: mutation.ownerColor,
+    } satisfies MutationOutcomePayload);
+    emitMoveResult(io, room);
+    if (outcome.gameOver) { broadcastGameOver(io, room, outcome.winner, outcome.reason ?? 'checkmate'); return; }
+    if (outcome.nextMutation) { processMutationQueue(io, room); return; }
+    scheduleAIMoveIfNeeded(io, room);
+    startMoveTimer(io, room);
+  }, GAME_CONFIG.mutationTimerSeconds * 1000);
+}
+
+// ---- Utilities ----
+
+function emitMoveResult(io: Server, room: Room): void {
+  const fallbackMove = { pieceId: '', from: { row: 0, col: 0 }, to: { row: 0, col: 0 } };
+  io.to(room.id).emit('move_result', {
+    gameState: room.state,
+    move: room.state.lastMove ?? fallbackMove,
+    atomic: false,
+  } satisfies MoveResultPayload);
 }
 
 function broadcastGameOver(
@@ -286,15 +504,17 @@ function broadcastGameOver(
 ): void {
   clearMoveTimer(room);
   clearPromotionTimer(room);
-  const payload: GameOverPayload = { winner, reason };
-  io.to(room.id).emit('game_over', payload);
-  console.log(`[room] game over in ${room.id}: winner=${winner ?? 'draw'} reason=${reason}`);
+  clearMutationTimer(room);
+  io.to(room.id).emit('game_over', { winner, reason } satisfies GameOverPayload);
+  console.log(`[room] game over ${room.id}: winner=${winner ?? 'draw'} reason=${reason}`);
 }
 
 function maybeCleanupRoom(roomId: string, room: Room): void {
-  const allDisconnected = room.players.every(p => !p.connected);
-  if (allDisconnected) {
+  if (room.hasAI || room.players.every(p => !p.connected)) {
     deleteRoom(roomId);
     console.log(`[room] cleaned up ${roomId}`);
   }
 }
+
+// Suppress unused import
+void triggerDescription;

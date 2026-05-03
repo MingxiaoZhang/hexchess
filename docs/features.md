@@ -1,65 +1,62 @@
 # Hexchess — Feature Status
 
-Last updated: 2026-05-02
+Last updated: 2026-05-03
 
-## V1 Features
+## V1 Features (all complete, all verified in V2)
+
+| Feature | Status |
+|---|---|
+| Full standard chess rules (all 6 piece types, castling, en passant, promotion) | ✅ Complete |
+| Server-authoritative move validation | ✅ Complete |
+| Real-time PvP via WebSocket | ✅ Complete |
+| Dark stone board aesthetic + Lichess SVG pieces | ✅ Complete |
+| Per-move timer (60s default, configurable) | ✅ Complete |
+| Timer forfeit | ✅ Complete |
+| Pawn promotion flow (Q/R/B/N choice + upgrade pick) | ✅ Complete |
+| Atomic upgrade (via promotion) | ✅ Complete |
+| Screen shake scaled by captured piece value | ✅ Complete |
+| Particle effects on Atomic explosion | ✅ Complete |
+| Movement animation (150ms ease-out) | ✅ Complete |
+| Idle piece glow + Atomic red aura | ✅ Complete |
+| Board highlights (selection, valid moves, last move) | ✅ Complete |
+| Board labels | ✅ Complete |
+| Private game rooms with shareable URL | ✅ Complete |
+| Lobby (create / join) | ✅ Complete |
+| Game-over screen | ✅ Complete |
+| Disconnection handling (30s window, forfeit) | ✅ Complete |
+
+## V2 Features
 
 | Feature | Status | Notes |
 |---|---|---|
-| Full standard chess rules | ✅ Complete | All 6 piece types, all special rules |
-| Pawn movement | ✅ Complete | Single/double push, promotion detection |
-| Knight movement | ✅ Complete | |
-| Bishop movement | ✅ Complete | Diagonal rays |
-| Rook movement | ✅ Complete | Cardinal rays |
-| Queen movement | ✅ Complete | Combined rays |
-| King movement | ✅ Complete | Including castling |
-| Check detection | ✅ Complete | |
-| Checkmate detection | ✅ Complete | Scholar's mate verified |
-| Stalemate detection | ✅ Complete | |
-| Castling (kingside) | ✅ Complete | Checks king path not attacked |
-| Castling (queenside) | ✅ Complete | |
-| En passant | ✅ Complete | Verified with integration test |
-| Pawn promotion (standard) | ✅ Complete | Q/R/B/N choice |
-| Turn enforcement | ✅ Complete | Server rejects out-of-turn moves |
-| Illegal move rejection | ✅ Complete | Server rejects and emits error_msg |
-| Dark stone board aesthetic | ✅ Complete | Dark/ivory squares, gold highlights |
-| Lichess SVG piece set | ✅ Complete | cburnett set downloaded |
-| Per-move timer (60s default) | ✅ Complete | Configurable via GAME_CONFIG |
-| Timer forfeit | ✅ Complete | |
-| Timer display in HUD | ✅ Complete | Turns red when ≤10s |
-| Atomic upgrade | ✅ Complete | Earned via pawn promotion |
-| Promotion upgrade modal | ✅ Complete | 3 cards, 30s countdown, auto-select |
-| Screen shake on captures | ✅ Complete | Scaled by piece value |
-| Screen shake (Atomic) | ✅ Complete | Heavy shake + red particles |
-| Screen shake (checkmate) | ✅ Complete | Max shake + white flash |
-| Particle effects | ✅ Complete | Atomic explosion |
-| Idle piece glow | ✅ Complete | Color-coded pulse per side |
-| Atomic upgrade aura | ✅ Complete | Red glow on pieces with Atomic |
-| Movement animation | ✅ Complete | 150ms ease-out cubic slide |
-| Piece selection highlights | ✅ Complete | Gold border + overlay |
-| Valid move highlights | ✅ Complete | Gold dots |
-| Last move highlights | ✅ Complete | Green overlay |
-| Board labels (files/ranks) | ✅ Complete | Corner labels |
-| Private game rooms | ✅ Complete | Shareable URL with room code |
-| Room creation | ✅ Complete | 8-char uppercase room code |
-| Room joining via URL | ✅ Complete | `?room=XXXXXXXX` auto-join |
-| Waiting screen | ✅ Complete | Lobby with shareable link + copy button |
-| Game over screen | ✅ Complete | Winner/draw + reason displayed |
-| Disconnection handling | ✅ Complete | 30s window, forfeit, opponent notified |
-| WebSocket sync | ✅ Complete | Full game state broadcast |
+| Per-piece mutation trigger system | ✅ Complete | Config-driven, verified for all 5 piece types |
+| Pawn advance trigger (crosses rank 5/4) | ✅ Complete | White: row ≤ 3, Black: row ≥ 4 |
+| Knight captures trigger (2 captures) | ✅ Complete | triggerCount tracks per-piece |
+| Bishop revenge trigger | ✅ Complete | Fires on surviving bishop when partner captured |
+| Rook opposition trigger | ✅ Complete | Only when rook itself moves into opposition |
+| Queen checks trigger (2 checks) | ✅ Complete | Counts direct checks from queen moves |
+| Mutation modal (V2-ready for multiple options) | ✅ Complete | Built to accept multiple mutation types from V3 |
+| 15-second mutation timer (auto-decline) | ✅ Complete | |
+| Accept / decline mutation flow | ✅ Complete | Both players notified of outcome |
+| Atomic mutation via trigger (in addition to promotion) | ✅ Complete | |
+| Mutation outcome toast notification | ✅ Complete | Shown to both players for 3 seconds |
+| Atomic visual aura on mutated pieces | ✅ Complete | Red glow (reuses V1 Atomic aura) |
+| Basic AI opponent | ✅ Complete | Pursues triggers: captures, pawn advance, rook opposition |
+| AI accepts mutations automatically | ✅ Complete | |
+| AI auto-promotes to queen | ✅ Complete | |
+| "Play vs AI" lobby option | ✅ Complete | |
 
-## Out of Scope for V1
+## Out of Scope for V2
 
 | Feature | Target |
 |---|---|
-| Bounty system | V2 |
-| Board chaos events (Board Flip, Row Shift, etc.) | V2 |
-| Fog of war | V2 |
-| Haste / Blink / Phase Shift / Extended Range upgrades | V2 |
-| Multiple upgrades per piece | V2 |
-| Matchmaking queue | V2 |
-| Sound effects | V2 |
-| Mobile support | V2 |
+| Ability card system (Berserk, Long Strike, etc.) | V3 |
+| Additional mutations beyond Atomic | V3 |
+| Trigger + ability combos | V3 |
+| Archetypes / weighted draws | V3 |
+| Bounty system | V3 |
+| Board chaos events | V3 |
+| Fog of war | V3 |
 | Ranked mode | Backlog |
-| Spectator mode | Backlog |
-| Replay system | Backlog |
+| Sound effects | Backlog |
+| Mobile support | Backlog |

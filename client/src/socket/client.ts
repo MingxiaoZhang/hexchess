@@ -1,16 +1,20 @@
 import { io, Socket } from 'socket.io-client';
 import {
+  AcceptMutationPayload,
+  ChoosePromotionPayload,
+  Color,
+  DeclineMutationPayload,
   GameOverPayload,
   GameStartPayload,
   JoinRoomPayload,
   MakeMovePayload,
   MoveResultPayload,
+  MutationAvailablePayload,
+  MutationOutcomePayload,
   Position,
-  PromotionRequiredPayload,
+  PieceType,
   RoomCreatedPayload,
   TimerUpdatePayload,
-  PieceType,
-  ChoosePromotionPayload,
 } from '@hexchess/shared';
 import { useGameStore } from '../store/gameStore';
 
@@ -27,44 +31,63 @@ export function getSocket(): Socket {
 }
 
 function attachListeners(sock: Socket): void {
-  const store = useGameStore.getState();
-
   sock.on('connect', () => {
-    store.setConnected(true);
-    store.setOpponentDisconnected(false);
+    useGameStore.getState().setConnected(true);
+    useGameStore.getState().setOpponentDisconnected(false);
   });
 
   sock.on('disconnect', () => {
-    store.setConnected(false);
+    useGameStore.getState().setConnected(false);
   });
 
   sock.on('game_start', (payload: GameStartPayload) => {
+    const store = useGameStore.getState();
     store.setGameState(payload.gameState);
     store.setMyColor(payload.yourColor);
+    store.setVsAI(payload.vsAI);
     store.setOpponentConnected(true);
   });
 
   sock.on('move_result', (payload: MoveResultPayload) => {
-    store.setGameState(payload.gameState);
-    store.selectPiece(null, []);
+    useGameStore.getState().setGameState(payload.gameState);
+    useGameStore.getState().selectPiece(null, []);
     if (onMoveResultCallback) onMoveResultCallback(payload);
   });
 
-  sock.on('promotion_required', (payload: PromotionRequiredPayload) => {
-    store.setPromotionRequired(payload.pieceId, payload.upgradeOptions);
+  sock.on('promotion_required', (payload: { pieceId: string; upgradeOptions: import('@hexchess/shared').UpgradeConfig[] }) => {
+    useGameStore.getState().setPromotionRequired(payload.pieceId, payload.upgradeOptions);
+  });
+
+  sock.on('mutation_available', (payload: MutationAvailablePayload) => {
+    useGameStore.getState().setMutationRequired(payload.pieceId, payload.mutations);
+  });
+
+  sock.on('mutation_outcome', (payload: MutationOutcomePayload) => {
+    // Clear local mutation modal (whether we were the owner or not)
+    useGameStore.getState().clearMutation();
+    // Show toast to both players
+    useGameStore.getState().setMutationToast({
+      pieceType: payload.pieceType,
+      accepted: payload.accepted,
+      mutationName: payload.mutationName,
+      ownerColor: payload.ownerColor,
+    });
+    // Auto-clear toast after 3 seconds
+    setTimeout(() => useGameStore.getState().setMutationToast(null), 3000);
   });
 
   sock.on('timer_update', (payload: TimerUpdatePayload) => {
-    store.setTimerUpdate(payload.secondsRemaining, payload.color);
+    useGameStore.getState().setTimerUpdate(payload.secondsRemaining, payload.color);
   });
 
   sock.on('game_over', (payload: GameOverPayload) => {
-    store.setGameState({ ...useGameStore.getState().gameState!, phase: 'complete' });
+    const gs = useGameStore.getState().gameState;
+    if (gs) useGameStore.getState().setGameState({ ...gs, phase: 'complete' });
     if (onGameOverCallback) onGameOverCallback(payload);
   });
 
   sock.on('opponent_disconnected', () => {
-    store.setOpponentDisconnected(true);
+    useGameStore.getState().setOpponentDisconnected(true);
   });
 
   sock.on('error_msg', (payload: { message: string }) => {
@@ -72,14 +95,15 @@ function attachListeners(sock: Socket): void {
   });
 }
 
-// ---- Actions called by the UI ----
+// ---- Actions ----
 
-export function createRoom(): Promise<RoomCreatedPayload> {
+export function createRoom(vsAI = false): Promise<RoomCreatedPayload> {
   return new Promise((resolve) => {
-    getSocket().emit('create_room', (payload: RoomCreatedPayload) => {
+    getSocket().emit('create_room', { vsAI }, (payload: RoomCreatedPayload) => {
       const store = useGameStore.getState();
       store.setRoomId(payload.roomId);
       store.setShareUrl(payload.shareUrl);
+      store.setVsAI(payload.vsAI);
       resolve(payload);
     });
   });
@@ -107,6 +131,18 @@ export function choosePromotion(roomId: string, pieceType: PieceType, upgradeId:
   useGameStore.getState().clearPromotion();
 }
 
+export function acceptMutation(roomId: string, pieceId: string, mutationId: string): void {
+  const payload: AcceptMutationPayload = { roomId, pieceId, mutationId };
+  getSocket().emit('accept_mutation', payload);
+  useGameStore.getState().clearMutation();
+}
+
+export function declineMutation(roomId: string, pieceId: string): void {
+  const payload: DeclineMutationPayload = { roomId, pieceId };
+  getSocket().emit('decline_mutation', payload);
+  useGameStore.getState().clearMutation();
+}
+
 export function onGameOver(cb: (payload: GameOverPayload) => void): void {
   onGameOverCallback = cb;
 }
@@ -114,3 +150,6 @@ export function onGameOver(cb: (payload: GameOverPayload) => void): void {
 export function onMoveResult(cb: (payload: MoveResultPayload) => void): void {
   onMoveResultCallback = cb;
 }
+
+// Suppress unused type
+void ((_: Color) => _);

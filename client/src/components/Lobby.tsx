@@ -15,7 +15,19 @@ export function Lobby(): JSX.Element {
     setLoading(true);
     setError('');
     try {
-      await createRoom();
+      await createRoom(false);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handlePlayAI() {
+    setLoading(true);
+    setError('');
+    try {
+      await createRoom(true);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -50,10 +62,14 @@ export function Lobby(): JSX.Element {
         {connected && !roomId && (
           <>
             <button style={styles.btnPrimary} onClick={handleCreate} disabled={loading}>
-              {loading ? 'Creating…' : 'Create Game'}
+              {loading ? 'Creating…' : 'Play vs Friend'}
             </button>
 
-            <div style={styles.divider}>or</div>
+            <button style={styles.btnAI} onClick={handlePlayAI} disabled={loading}>
+              {loading ? 'Starting…' : 'Play vs AI'}
+            </button>
+
+            <div style={styles.divider}>or join a friend's game</div>
 
             <div style={styles.joinRow}>
               <input
@@ -137,6 +153,16 @@ const styles = {
     border: 'none',
     borderRadius: '8px',
     fontSize: '16px',
+    fontWeight: 'bold' as const,
+    cursor: 'pointer',
+  },
+  btnAI: {
+    padding: '12px',
+    background: 'transparent',
+    color: '#ff8844',
+    border: '1px solid #ff5500',
+    borderRadius: '8px',
+    fontSize: '15px',
     fontWeight: 'bold' as const,
     cursor: 'pointer',
   },

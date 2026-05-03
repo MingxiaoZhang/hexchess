@@ -64,7 +64,57 @@
 
 ---
 
-## 2026-05-02 — No client-side move validation for promotion eligibility
+---
+
+## 2026-05-03 — Rook opposition trigger only fires when the rook itself moves
+
+**Decision:** The rook opposition trigger (`rook_opposition`) increments `triggerCount` only when the piece being moved IS the rook (`move.pieceId === piece.id`). Triggering when an *opponent's* rook moves into your rook's file is not detected.
+
+**Reasoning:** In the standard chess starting position, both a-file rooks and both h-file rooks share files. Checking opposition on every move would fire the trigger immediately at game start. Scoping detection to the rook's own move eliminates the false positive cleanly. The downside (missing opponent-driven opposition) is acceptable — the trigger still fires naturally when you open a file and advance your rook.
+
+---
+
+## 2026-05-03 — Trigger detection is a separate module (`triggers.ts`), not in `chess.ts`
+
+**Decision:** All trigger logic lives in `server/src/game/triggers.ts`. The chess engine (`chess.ts`) knows nothing about triggers. Triggers are detected in `state.ts` after every `applyMove` call.
+
+**Reasoning:** Chess engine purity (pure move application + check/checkmate) must be preserved. Triggers are a Hexchess-specific mechanic layered on top of standard chess. Keeping them separate means adding a V3 trigger = adding a config entry to `TRIGGER_CONFIGS` and an effect in `triggers.ts`, no other files change.
+
+---
+
+## 2026-05-03 — Mutations use the same `Upgrade` type and Atomic config as promotion upgrades
+
+**Decision:** `MutationPending.mutations` holds `UpgradeConfig[]` — the same type used for promotion upgrade options. The `ATOMIC_UPGRADE` constant is shared between the promotion pool and the mutation pool.
+
+**Reasoning:** Mutations and promotion upgrades are mechanically identical (both add a specific upgrade to a piece). Sharing the type avoids duplication and means any new upgrade config added for V3 is automatically available to both delivery mechanisms.
+
+---
+
+## 2026-05-03 — Mutation queue is a flat array; multiple triggers in one move are processed sequentially
+
+**Decision:** `GameState.mutationQueue: MutationPending[]` is a FIFO queue. When multiple triggers fire in one move, all are appended. The game stays in `'mutation'` phase until the queue drains, processing one modal at a time.
+
+**Reasoning:** Multiple triggers in a single move is rare but possible (e.g., pawn captures a bishop and advances past halfway). Sequential processing with one modal at a time is simpler than parallel offers and avoids UI complexity. Each trigger gets its full 15-second window.
+
+---
+
+## 2026-05-03 — AI auto-accepts mutations immediately (no timer)
+
+**Decision:** When a mutation fires for the AI's piece, the server calls `applyMutationAccept` immediately without starting the 15-second timer.
+
+**Reasoning:** The AI always accepts Atomic (as designed by the V2 LLD). Running the timer would stall the game for 15 seconds needlessly. The AI's auto-accept also teaches the human player that accepting mutations is the typical choice, demonstrating the feature.
+
+---
+
+## 2026-05-03 — AI promotes to queen + first upgrade automatically (no user input)
+
+**Decision:** When the AI's pawn promotes, the server immediately applies `queen` + `upgradeOptions[0]` without entering the `'promotion'` phase.
+
+**Reasoning:** The promotion modal is a human UX feature. Showing it for the AI (and waiting 30 seconds for auto-select) would make AI games feel broken. Auto-selecting is the logical AI behavior and matches the "AI accepts everything" design.
+
+---
+
+## 2026-05-03 — No client-side move validation for promotion eligibility
 
 **Decision:** The client accepts all `make_move` submissions to the promotion square. The server is responsible for detecting that the move triggers promotion and entering the promotion phase.
 

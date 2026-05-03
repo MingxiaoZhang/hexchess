@@ -9,9 +9,10 @@ function formatTime(seconds: number): string {
 
 interface HUDProps {
   myColor: Color;
+  vsAI?: boolean;
 }
 
-export function HUD({ myColor }: HUDProps): JSX.Element {
+export function HUD({ myColor, vsAI = false }: HUDProps): JSX.Element {
   const gameState = useGameStore(s => s.gameState);
   const secondsRemaining = useGameStore(s => s.secondsRemaining);
   const timerColor = useGameStore(s => s.timerColor);
@@ -28,8 +29,8 @@ export function HUD({ myColor }: HUDProps): JSX.Element {
       <div style={styles.playerRow}>
         <div style={{ ...styles.colorDot, background: opponentColor === 'white' ? '#f0e6c8' : '#2a2a2a', border: '2px solid #888' }} />
         <span style={styles.playerLabel}>
-          {opponentColor.charAt(0).toUpperCase() + opponentColor.slice(1)}
-          {opponentDisconnected && <span style={styles.disconnected}> (disconnected)</span>}
+          {vsAI ? 'AI' : opponentColor.charAt(0).toUpperCase() + opponentColor.slice(1)}
+          {opponentDisconnected && !vsAI && <span style={styles.disconnected}> (disconnected)</span>}
         </span>
         {!isMyTurn && gameState?.phase === 'active' && (
           <div style={{ ...styles.timer, color: urgent ? '#ff4444' : '#e0d0a0', borderColor: urgent ? '#ff4444' : '#888' }}>

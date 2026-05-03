@@ -4,6 +4,7 @@ import { useGameStore } from '../store/gameStore';
 import { makeMove, onMoveResult } from '../socket/client';
 import { HUD } from './HUD';
 import { PromotionModal } from './PromotionModal';
+import { MutationModal } from './MutationModal';
 import { loadPieceImages, renderFrame, boardToCanvas, canvasToBoard } from '../canvas/renderer';
 import { startAnimation } from '../canvas/animations';
 import {
@@ -162,6 +163,9 @@ export function GameScreen({ gameState, myColor }: GameScreenProps): JSX.Element
   }, [gameState, myColor, selectedPieceId, validMoves, selectPiece]);
 
   const promotionPending = useGameStore(s => s.promotionPending);
+  const mutationPending = useGameStore(s => s.mutationPending);
+  const mutationToast = useGameStore(s => s.mutationToast);
+  const vsAI = useGameStore(s => s.vsAI);
   const winner = gameState.winner;
   const reason = gameState.gameOverReason;
 
@@ -180,19 +184,31 @@ export function GameScreen({ gameState, myColor }: GameScreenProps): JSX.Element
 
       {/* Side panel */}
       <div style={styles.sidebar}>
-        <HUD myColor={myColor} />
+        <HUD myColor={myColor} vsAI={vsAI} />
 
         {gameState.phase === 'complete' && (
           <div style={styles.gameOver}>
             {winner
-              ? (winner === myColor ? '🏆 You win!' : 'You lose')
+              ? (winner === myColor ? 'You win!' : 'You lose')
               : 'Draw'}
             {reason && <div style={styles.reason}>{reason}</div>}
           </div>
         )}
       </div>
 
+      {/* Mutation outcome toast — shown to both players */}
+      {mutationToast && (
+        <div style={styles.toast}>
+          {mutationToast.ownerColor === myColor ? 'Your' : "Opponent's"}{' '}
+          {mutationToast.pieceType}{' '}
+          {mutationToast.accepted
+            ? `gained ${mutationToast.mutationName ?? 'a mutation'}!`
+            : 'declined the mutation.'}
+        </div>
+      )}
+
       {promotionPending && <PromotionModal />}
+      {mutationPending && <MutationModal />}
     </div>
   );
 }
@@ -321,6 +337,20 @@ const styles = {
     fontSize: '13px',
     color: '#aaa',
     marginTop: '6px',
+    textTransform: 'capitalize' as const,
+  },
+  toast: {
+    position: 'fixed' as const,
+    top: '20px',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    background: 'rgba(255,80,0,0.9)',
+    color: '#fff',
+    padding: '10px 20px',
+    borderRadius: '8px',
+    fontSize: '15px',
+    zIndex: 900,
+    pointerEvents: 'none' as const,
     textTransform: 'capitalize' as const,
   },
 };

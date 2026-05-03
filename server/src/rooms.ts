@@ -14,12 +14,14 @@ export interface Room {
   id: string;
   players: PlayerInfo[];
   state: GameState;
-  // Per-move countdown timer
   moveTimer: ReturnType<typeof setTimeout> | null;
-  moveTimerStartedAt: number | null; // epoch ms when current move timer started
+  moveTimerStartedAt: number | null;
   secondsRemaining: number;
-  // Promotion auto-select timer (30 s)
   promotionTimer: ReturnType<typeof setTimeout> | null;
+  mutationTimer: ReturnType<typeof setTimeout> | null; // V2
+  // V2: AI opponent support
+  hasAI: boolean;
+  aiColor: Color | null;
 }
 
 const rooms = new Map<string, Room>();
@@ -34,6 +36,9 @@ export function createRoom(): Room {
     moveTimerStartedAt: null,
     secondsRemaining: GAME_CONFIG.moveTimerSeconds,
     promotionTimer: null,
+    mutationTimer: null,
+    hasAI: false,
+    aiColor: null,
   };
   rooms.set(id, room);
   return room;
@@ -49,11 +54,10 @@ export function deleteRoom(id: string): void {
 
 export function addPlayer(room: Room, socketId: string): Color | null {
   if (room.players.length >= 2) return null;
-  // First player is randomly white or black; second gets the other color
-  const color: Color = room.players.length === 0
-    ? (Math.random() < 0.5 ? 'white' : 'black')
-    : (room.players[0].color === 'white' ? 'black' : 'white');
-
+  const color: Color =
+    room.players.length === 0
+      ? Math.random() < 0.5 ? 'white' : 'black'
+      : room.players[0].color === 'white' ? 'black' : 'white';
   room.players.push({ socketId, color, connected: true, reconnectTimer: null });
   return color;
 }
@@ -67,29 +71,24 @@ export function getOpponent(room: Room, socketId: string): PlayerInfo | undefine
 }
 
 export function isFull(room: Room): boolean {
-  return room.players.length === 2;
+  // In an AI game the room is full once the one human player has joined
+  return room.hasAI ? room.players.length >= 1 : room.players.length >= 2;
 }
 
 export function clearMoveTimer(room: Room): void {
-  if (room.moveTimer) {
-    clearTimeout(room.moveTimer);
-    room.moveTimer = null;
-    room.moveTimerStartedAt = null;
-  }
+  if (room.moveTimer) { clearTimeout(room.moveTimer); room.moveTimer = null; room.moveTimerStartedAt = null; }
 }
 
 export function clearPromotionTimer(room: Room): void {
-  if (room.promotionTimer) {
-    clearTimeout(room.promotionTimer);
-    room.promotionTimer = null;
-  }
+  if (room.promotionTimer) { clearTimeout(room.promotionTimer); room.promotionTimer = null; }
+}
+
+export function clearMutationTimer(room: Room): void {
+  if (room.mutationTimer) { clearTimeout(room.mutationTimer); room.mutationTimer = null; }
 }
 
 export function clearReconnectTimer(player: PlayerInfo): void {
-  if (player.reconnectTimer) {
-    clearTimeout(player.reconnectTimer);
-    player.reconnectTimer = null;
-  }
+  if (player.reconnectTimer) { clearTimeout(player.reconnectTimer); player.reconnectTimer = null; }
 }
 
 export function findRoomBySocketId(socketId: string): [string, Room] | null {

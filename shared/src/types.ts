@@ -3,6 +3,14 @@
 export type PieceType = 'pawn' | 'rook' | 'knight' | 'bishop' | 'queen' | 'king';
 export type Color = 'white' | 'black';
 
+// Which gameplay event unlocks a mutation offer for this piece.
+export type TriggerType =
+  | 'pawn_advance'      // pawn crosses the halfway line
+  | 'knight_captures'   // knight accumulates 2 captures
+  | 'bishop_revenge'    // surviving bishop when its partner is captured
+  | 'rook_opposition'   // rook shares a file with an opponent rook
+  | 'queen_checks';     // queen delivers check twice
+
 export interface Position {
   row: number; // 0 = rank 8 (black back rank), 7 = rank 1 (white back rank)
   col: number; // 0 = file a, 7 = file h
@@ -21,10 +29,13 @@ export interface Piece {
   color: Color;
   position: Position;
   upgrades: Upgrade[];
-  hasMoved: boolean; // tracks castling eligibility
+  hasMoved: boolean;
+  // V2: trigger tracking
+  triggerCount: number;  // progress toward this piece's trigger condition
+  triggered: boolean;    // true once the trigger has fired (prevents re-triggering)
 }
 
-export type GamePhase = 'waiting' | 'active' | 'promotion' | 'complete';
+export type GamePhase = 'waiting' | 'active' | 'promotion' | 'mutation' | 'complete';
 
 export interface Move {
   pieceId: string;
@@ -45,8 +56,8 @@ export interface TimerConfig {
 }
 
 export interface CapturedPieces {
-  byWhite: Piece[]; // pieces captured by white player (i.e., black pieces)
-  byBlack: Piece[]; // pieces captured by black player (i.e., white pieces)
+  byWhite: Piece[];
+  byBlack: Piece[];
 }
 
 export interface PromotionPending {
@@ -55,8 +66,17 @@ export interface PromotionPending {
   upgradeOptions: UpgradeConfig[];
 }
 
+// One entry in the mutation queue — one piece that has earned a mutation offer.
+export interface MutationPending {
+  pieceId: string;
+  pieceType: PieceType;
+  triggerType: TriggerType;
+  ownerColor: Color;
+  mutations: UpgradeConfig[]; // options shown in modal (V2: only Atomic)
+}
+
 export interface GameState {
-  board: (string | null)[][]; // board[row][col] = pieceId | null
+  board: (string | null)[][];
   pieces: Record<string, Piece>;
   currentTurn: Color;
   phase: GamePhase;
@@ -68,6 +88,8 @@ export interface GameState {
   winner?: Color | null;
   gameOverReason?: 'checkmate' | 'stalemate' | 'timeout' | 'forfeit' | 'disconnect';
   promotionPending?: PromotionPending;
+  // V2: pending mutation queue — game is paused while non-empty
+  mutationQueue: MutationPending[];
   lastMove?: Move;
 }
 
@@ -87,9 +109,14 @@ export interface GameConfig {
   upgradePool: UpgradeConfig[];
   promotionUpgradeCount: number;
   reconnectionWindowMs: number;
+  mutationTimerSeconds: number; // V2: how long player has to accept/decline mutation
 }
 
 // ---- Socket event payloads: Client → Server ----
+
+export interface CreateRoomPayload {
+  vsAI?: boolean;
+}
 
 export interface JoinRoomPayload {
   roomId: string;
@@ -115,16 +142,29 @@ export interface ChoosePromotionPayload {
   upgradeId: string;
 }
 
+export interface AcceptMutationPayload {
+  roomId: string;
+  pieceId: string;
+  mutationId: string;
+}
+
+export interface DeclineMutationPayload {
+  roomId: string;
+  pieceId: string;
+}
+
 // ---- Socket event payloads: Server → Client ----
 
 export interface RoomCreatedPayload {
   roomId: string;
   shareUrl: string;
+  vsAI: boolean;
 }
 
 export interface GameStartPayload {
   gameState: GameState;
   yourColor: Color;
+  vsAI: boolean;
 }
 
 export interface MoveResultPayload {
@@ -136,6 +176,24 @@ export interface MoveResultPayload {
 export interface PromotionRequiredPayload {
   pieceId: string;
   upgradeOptions: UpgradeConfig[];
+}
+
+// Sent ONLY to the owning player when their piece's trigger fires.
+export interface MutationAvailablePayload {
+  pieceId: string;
+  pieceType: PieceType;
+  triggerType: TriggerType;
+  mutations: UpgradeConfig[];
+}
+
+// Sent to BOTH players — winner's name, etc. (the opponent sees a notification)
+export interface MutationOutcomePayload {
+  pieceId: string;
+  pieceType: PieceType;
+  accepted: boolean;
+  mutationId?: string;
+  mutationName?: string;
+  ownerColor: Color;
 }
 
 export interface TimerUpdatePayload {
