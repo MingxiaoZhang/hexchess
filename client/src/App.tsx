@@ -9,39 +9,29 @@ export function App(): JSX.Element {
   const myColor = useGameStore(s => s.myColor);
 
   useEffect(() => {
-    getSocket(); // establishes connection and attaches listeners
+    getSocket();
 
+    const session = loadSession();
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get('room')?.toUpperCase() ?? null;
 
-    // Check for a stored session first (handles page refresh mid-game)
-    const session = loadSession();
     if (session) {
-      if (!roomParam || roomParam === session.roomId) {
-        // Reconnect to the existing game using the stored token
-        joinRoom(session.roomId, session.reconnectToken).catch(() => {
-          // Session is stale (room expired) — clear it and fall through
-          clearSession();
-          if (roomParam && roomParam !== session.roomId) {
-            joinRoom(roomParam).catch(console.error);
-          }
-        });
-        return;
-      }
-    }
-
-    // Also check for a pending token from create_room (creator refreshed before opponent joined)
-    if (roomParam) {
-      try {
-        const pending = JSON.parse(localStorage.getItem('hexchess_pending_token') ?? 'null') as
-          { roomId: string; reconnectToken: string } | null;
-        if (pending && pending.roomId === roomParam) {
-          joinRoom(roomParam, pending.reconnectToken).catch(() => joinRoom(roomParam).catch(console.error));
-          return;
+      // Existing session takes priority — bring the player back to their game.
+      useGameStore.getState().setReconnecting(true);
+      joinRoom(session.roomId, session.reconnectToken).catch(() => {
+        // Room expired or token invalid — wipe the session and fall through.
+        clearSession();
+        useGameStore.getState().setReconnecting(false);
+        // If there's a different room in the URL, join that as a fresh player.
+        if (roomParam && roomParam !== session.roomId) {
+          joinRoom(roomParam).catch(console.error);
         }
-      } catch { /* ignore */ }
+      });
+    } else if (roomParam) {
+      // No saved session — fresh join via shared link.
       joinRoom(roomParam).catch(console.error);
     }
+    // No session and no URL param → just show the lobby.
   }, []);
 
   const isPlaying = gameState && myColor && gameState.phase !== 'waiting';

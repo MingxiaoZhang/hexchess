@@ -74,6 +74,7 @@ function attachListeners(sock: Socket): void {
     store.setVsAI(payload.vsAI);
     store.setOpponentConnected(true);
     store.setOpponentDisconnected(false);
+    store.setReconnecting(false);
     // Persist session so the player can reconnect after a page refresh
     const roomId = store.roomId;
     if (roomId) {

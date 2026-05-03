@@ -39,6 +39,7 @@ export interface GameStore {
   connected: boolean;
   opponentConnected: boolean;
   opponentDisconnected: boolean;
+  reconnecting: boolean; // true while attempting to restore a saved session
 
   // Actions
   setGameState: (gs: GameState) => void;
@@ -50,6 +51,7 @@ export interface GameStore {
   setConnected: (v: boolean) => void;
   setOpponentConnected: (v: boolean) => void;
   setOpponentDisconnected: (v: boolean) => void;
+  setReconnecting: (v: boolean) => void;
   selectPiece: (pieceId: string | null, validMoves: Position[]) => void;
   setPromotionRequired: (pieceId: string, options: UpgradeConfig[]) => void;
   clearPromotion: () => void;
@@ -79,6 +81,7 @@ const initialState = {
   connected: false,
   opponentConnected: false,
   opponentDisconnected: false,
+  reconnecting: false,
 };
 
 export const useGameStore = create<GameStore>((set) => ({
@@ -93,6 +96,7 @@ export const useGameStore = create<GameStore>((set) => ({
   setConnected: (v) => set({ connected: v }),
   setOpponentConnected: (v) => set({ opponentConnected: v }),
   setOpponentDisconnected: (v) => set({ opponentDisconnected: v }),
+  setReconnecting: (v) => set({ reconnecting: v }),
   selectPiece: (pieceId, validMoves) => set({ selectedPieceId: pieceId, validMoves }),
   setPromotionRequired: (pieceId, options) =>
     set({ promotionPending: true, promotionPieceId: pieceId, promotionOptions: options }),

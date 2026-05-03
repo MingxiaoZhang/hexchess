@@ -10,6 +10,7 @@ export function Lobby(): JSX.Element {
   const shareUrl = useGameStore(s => s.shareUrl);
   const roomId = useGameStore(s => s.roomId);
   const connected = useGameStore(s => s.connected);
+  const reconnecting = useGameStore(s => s.reconnecting);
 
   async function handleCreate() {
     setLoading(true);
@@ -55,11 +56,13 @@ export function Lobby(): JSX.Element {
         <h1 style={styles.title}>Hexchess</h1>
         <p style={styles.tagline}>Chess, upgraded.</p>
 
-        {!connected && (
-          <div style={styles.status}>Connecting…</div>
+        {(!connected || reconnecting) && (
+          <div style={styles.status}>
+            {reconnecting ? 'Rejoining your game…' : 'Connecting…'}
+          </div>
         )}
 
-        {connected && !roomId && (
+        {connected && !reconnecting && !roomId && (
           <>
             <button style={styles.btnPrimary} onClick={handleCreate} disabled={loading}>
               {loading ? 'Creating…' : 'Play vs Friend'}
