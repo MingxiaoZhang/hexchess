@@ -8,6 +8,7 @@ export interface PlayerInfo {
   color: Color;
   connected: boolean;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
+  reconnectToken: string; // secret token the client stores in localStorage
 }
 
 export interface Room {
@@ -58,8 +59,13 @@ export function addPlayer(room: Room, socketId: string): Color | null {
     room.players.length === 0
       ? Math.random() < 0.5 ? 'white' : 'black'
       : room.players[0].color === 'white' ? 'black' : 'white';
-  room.players.push({ socketId, color, connected: true, reconnectTimer: null });
+  const reconnectToken = uuid();
+  room.players.push({ socketId, color, connected: true, reconnectTimer: null, reconnectToken });
   return color;
+}
+
+export function findPlayerByToken(room: Room, token: string): PlayerInfo | undefined {
+  return room.players.find(p => p.reconnectToken === token);
 }
 
 export function findPlayerInRoom(room: Room, socketId: string): PlayerInfo | undefined {

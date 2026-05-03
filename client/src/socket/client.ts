@@ -18,6 +18,33 @@ import {
 } from '@hexchess/shared';
 import { useGameStore } from '../store/gameStore';
 
+// ---- Session persistence (survives page refresh) ----
+
+const SESSION_KEY = 'hexchess_session';
+
+interface StoredSession {
+  roomId: string;
+  myColor: Color;
+  reconnectToken: string;
+}
+
+export function saveSession(s: StoredSession): void {
+  localStorage.setItem(SESSION_KEY, JSON.stringify(s));
+}
+
+export function loadSession(): StoredSession | null {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? (JSON.parse(raw) as StoredSession) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function clearSession(): void {
+  localStorage.removeItem(SESSION_KEY);
+}
+
 let socket: Socket | null = null;
 let onGameOverCallback: ((payload: GameOverPayload) => void) | null = null;
 let onMoveResultCallback: ((payload: MoveResultPayload) => void) | null = null;
@@ -46,6 +73,12 @@ function attachListeners(sock: Socket): void {
     store.setMyColor(payload.yourColor);
     store.setVsAI(payload.vsAI);
     store.setOpponentConnected(true);
+    store.setOpponentDisconnected(false);
+    // Persist session so the player can reconnect after a page refresh
+    const roomId = store.roomId;
+    if (roomId) {
+      saveSession({ roomId, myColor: payload.yourColor, reconnectToken: payload.reconnectToken });
+    }
   });
 
   sock.on('move_result', (payload: MoveResultPayload) => {
@@ -83,11 +116,16 @@ function attachListeners(sock: Socket): void {
   sock.on('game_over', (payload: GameOverPayload) => {
     const gs = useGameStore.getState().gameState;
     if (gs) useGameStore.getState().setGameState({ ...gs, phase: 'complete' });
+    clearSession(); // game is over — no point keeping the reconnect token
     if (onGameOverCallback) onGameOverCallback(payload);
   });
 
   sock.on('opponent_disconnected', () => {
     useGameStore.getState().setOpponentDisconnected(true);
+  });
+
+  sock.on('opponent_reconnected', () => {
+    useGameStore.getState().setOpponentDisconnected(false);
   });
 
   sock.on('error_msg', (payload: { message: string }) => {
@@ -104,14 +142,20 @@ export function createRoom(vsAI = false): Promise<RoomCreatedPayload> {
       store.setRoomId(payload.roomId);
       store.setShareUrl(payload.shareUrl);
       store.setVsAI(payload.vsAI);
+      // Store token now so creator can reconnect even before the opponent joins
+      // (myColor isn't known until game_start, so we'll update the full session then)
+      localStorage.setItem('hexchess_pending_token', JSON.stringify({
+        roomId: payload.roomId,
+        reconnectToken: payload.reconnectToken,
+      }));
       resolve(payload);
     });
   });
 }
 
-export function joinRoom(roomId: string): Promise<void> {
+export function joinRoom(roomId: string, reconnectToken?: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const payload: JoinRoomPayload = { roomId };
+    const payload: JoinRoomPayload = { roomId, reconnectToken };
     getSocket().emit('join_room', payload, (err?: string) => {
       if (err) { reject(new Error(err)); return; }
       useGameStore.getState().setRoomId(roomId);

@@ -120,6 +120,7 @@ export interface CreateRoomPayload {
 
 export interface JoinRoomPayload {
   roomId: string;
+  reconnectToken?: string; // provided when rejoining after a page refresh
 }
 
 export interface MakeMovePayload {
@@ -159,12 +160,14 @@ export interface RoomCreatedPayload {
   roomId: string;
   shareUrl: string;
   vsAI: boolean;
+  reconnectToken: string; // store in localStorage to survive page refresh
 }
 
 export interface GameStartPayload {
   gameState: GameState;
   yourColor: Color;
   vsAI: boolean;
+  reconnectToken: string;
 }
 
 export interface MoveResultPayload {

@@ -28,6 +28,7 @@ import {
   clearReconnectTimer,
   createRoom,
   deleteRoom,
+  findPlayerByToken,
   findPlayerInRoom,
   findRoomBySocketId,
   getOpponent,
@@ -62,6 +63,7 @@ export function registerSocketHandlers(io: Server): void {
       socket.join(room.id);
       const origin = process.env['CLIENT_ORIGIN'] ?? 'http://localhost:5173';
       const shareUrl = `${origin}/?room=${room.id}`;
+      const player = findPlayerInRoom(room, socket.id)!;
       console.log(`[room] created ${room.id} by ${socket.id} vsAI=${vsAI}`);
 
       if (vsAI) {
@@ -70,10 +72,10 @@ export function registerSocketHandlers(io: Server): void {
         startGameInRoom(io, room);
       }
 
-      callback({ roomId: room.id, shareUrl, vsAI });
+      callback({ roomId: room.id, shareUrl, vsAI, reconnectToken: player.reconnectToken });
     });
 
-    socket.on('join_room', ({ roomId }: JoinRoomPayload, callback?: (err?: string) => void) => {
+    socket.on('join_room', ({ roomId, reconnectToken }: JoinRoomPayload, callback?: (err?: string) => void) => {
       const room = getRoom(roomId);
       if (!room) {
         if (callback) callback('Room not found');
@@ -81,7 +83,34 @@ export function registerSocketHandlers(io: Server): void {
         return;
       }
 
-      // Reconnection check
+      // Token-based reconnection: player refreshed the page and has their stored token
+      if (reconnectToken) {
+        const returning = findPlayerByToken(room, reconnectToken);
+        if (returning) {
+          returning.socketId = socket.id;
+          returning.connected = true;
+          clearReconnectTimer(returning);
+          socket.join(room.id);
+          console.log(`[room] ${socket.id} reconnected to ${room.id} as ${returning.color}`);
+          if (callback) callback();
+          // Re-send full game state so the client can resume from where it left off
+          if (room.state.phase !== 'waiting') {
+            const payload: GameStartPayload = {
+              gameState: sanitizeStateForPlayer(room.state, returning.color),
+              yourColor: returning.color,
+              vsAI: room.hasAI,
+              reconnectToken: returning.reconnectToken,
+            };
+            socket.emit('game_start', payload);
+            // Tell the opponent the player is back
+            const opp = getOpponent(room, socket.id);
+            if (opp) io.to(opp.socketId).emit('opponent_reconnected');
+          }
+          return;
+        }
+      }
+
+      // Legacy same-socket reconnect (socket.io automatic reconnect without page refresh)
       const existing = findPlayerInRoom(room, socket.id);
       if (existing) {
         existing.connected = true;
@@ -91,6 +120,7 @@ export function registerSocketHandlers(io: Server): void {
         return;
       }
 
+      // New player joining
       if (isFull(room)) {
         if (callback) callback('Room is full');
         socket.emit('error_msg', { message: 'Room is full' });
@@ -213,15 +243,6 @@ export function registerSocketHandlers(io: Server): void {
 
       if (room.state.phase === 'complete') { maybeCleanupRoom(roomId, room); return; }
 
-      // In AI games, disconnection immediately ends the game
-      if (room.hasAI) {
-        clearMoveTimer(room);
-        room.state = applyDisconnectWin(room.state, player.color);
-        broadcastGameOver(io, room, room.state.winner ?? null, 'disconnect');
-        maybeCleanupRoom(roomId, room);
-        return;
-      }
-
       player.connected = false;
       const opp = getOpponent(room, socket.id);
       if (opp) io.to(opp.socketId).emit('opponent_disconnected');
@@ -251,6 +272,7 @@ function startGameInRoom(io: Server, room: Room): void {
       gameState: sanitizeStateForPlayer(room.state, player.color),
       yourColor: player.color,
       vsAI: room.hasAI,
+      reconnectToken: player.reconnectToken,
     };
     io.to(player.socketId).emit('game_start', payload);
   }
