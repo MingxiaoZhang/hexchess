@@ -36,6 +36,28 @@ export function handleMove(
   // Detect triggers (runs on every move regardless of promotion)
   const { state: afterTriggers, newTriggers } = detectAndUpdateTriggers(state, afterMove, move);
 
+  // Atomic king-kill is an immediate win — must be checked before trigger queue processing,
+  // because triggers may also fire in the same explosion (e.g. bishop revenge).
+  if (move.atomic) {
+    const opp: Color = actingColor === 'white' ? 'black' : 'white';
+    const oppKingAlive = Object.values(afterTriggers.pieces).some(
+      p => p.type === 'king' && p.color === opp
+    );
+    if (!oppKingAlive) {
+      return {
+        newState: { ...afterTriggers, phase: 'complete', winner: actingColor, gameOverReason: 'checkmate' },
+        move,
+        atomic: true,
+        gameOver: true,
+        winner: actingColor,
+        reason: 'checkmate',
+        promotionRequired: false,
+        upgradeOptions: [],
+        newTriggers,
+      };
+    }
+  }
+
   if (promotionNeeded) {
     const upgradeOptions = drawUpgradeOptions(GAME_CONFIG, GAME_CONFIG.promotionUpgradeCount);
     const pendingQueue = [...afterTriggers.mutationQueue, ...newTriggers];
@@ -267,11 +289,23 @@ function resolveGameOver(
   let winner: Color | null = null;
   let reason: 'checkmate' | 'stalemate' | undefined;
 
-  if (isCheckmate(state, nextColor)) {
+  // Atomic rule: if the opponent's king was destroyed in the blast, it's an instant win.
+  if (atomic) {
+    const opponentKingAlive = Object.values(state.pieces).some(
+      p => p.type === 'king' && p.color === nextColor
+    );
+    if (!opponentKingAlive) {
+      gameOver = true;
+      winner = actingColor;
+      reason = 'checkmate'; // reuse checkmate reason for the game-over screen
+    }
+  }
+
+  if (!gameOver && isCheckmate(state, nextColor)) {
     gameOver = true;
     winner = actingColor;
     reason = 'checkmate';
-  } else if (isStalemate(state, nextColor)) {
+  } else if (!gameOver && isStalemate(state, nextColor)) {
     gameOver = true;
     winner = null;
     reason = 'stalemate';

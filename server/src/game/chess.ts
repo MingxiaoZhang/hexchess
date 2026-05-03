@@ -213,7 +213,8 @@ function simulateMove(state: GameState, piece: Piece, to: Position): Pick<GameSt
   const isAtomicCapture = hasAtomic && (capturedId !== null && capturedId !== undefined);
 
   if (isAtomicCapture) {
-    // Attacker explodes: remove attacker, captured piece, and adjacent non-kings
+    // Attacker explodes: remove attacker, captured piece, and all adjacent pieces.
+    // Kings are no longer excluded — a king caught in the blast dies instantly.
     board[row][col] = null;
     if (capturedId) {
       if (isEnPassant) {
@@ -232,7 +233,6 @@ function simulateMove(state: GameState, piece: Piece, to: Position): Pick<GameSt
       if (!inBounds(ar, ac)) continue;
       const adjId = board[ar][ac];
       if (!adjId || !pieces[adjId]) continue;
-      if (pieces[adjId].type === 'king') continue;
       board[ar][ac] = null;
       delete pieces[adjId];
     }
@@ -276,6 +276,11 @@ export function getValidMoves(state: GameState, pieceId: string): Position[] {
   const pseudoMoves = getPseudoLegalMoves(state, piece);
   return pseudoMoves.filter(to => {
     const sim = simulateMove(state, piece, to);
+    // If own king was caught in an Atomic blast, the move is illegal
+    const ownKingExists = Object.values(sim.pieces).some(
+      p => p.color === piece.color && p.type === 'king'
+    );
+    if (!ownKingExists) return false;
     return !isInCheck(sim, piece.color);
   });
 }
@@ -349,14 +354,14 @@ export function applyMove(
       atomicDestroyedIds.push(epCapturedId);
     }
 
-    // Destroy pieces adjacent to the explosion center (target square), skip kings
+    // Destroy pieces adjacent to the explosion center (target square).
+    // Kings are no longer excluded — a king adjacent to the blast dies.
     for (const [dr, dc] of ALL_DIRS) {
       const ar = to.row + dr;
       const ac = to.col + dc;
       if (!inBounds(ar, ac)) continue;
       const adjId = board[ar][ac];
       if (!adjId || !pieces[adjId]) continue;
-      if (pieces[adjId].type === 'king') continue;
       board[ar][ac] = null;
       atomicDestroyedIds.push(adjId);
     }
