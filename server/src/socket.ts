@@ -72,7 +72,7 @@ export function registerSocketHandlers(io: Server): void {
         startGameInRoom(io, room);
       }
 
-      callback({ roomId: room.id, shareUrl, vsAI, reconnectToken: player.reconnectToken });
+      callback({ roomId: room.id, shareUrl, vsAI, reconnectToken: player.reconnectToken, yourColor: color });
     });
 
     socket.on('join_room', ({ roomId, reconnectToken }: JoinRoomPayload, callback?: (err?: string) => void) => {
@@ -278,6 +278,16 @@ function startGameInRoom(io: Server, room: Room): void {
     };
     io.to(player.socketId).emit('game_start', payload);
   }
+
+  // Also broadcast to the whole socket.io room so any extra connected sockets
+  // (e.g. creator's original tab when a second tab stole the socketId slot)
+  // pick up the active state. Clients only apply this if they already know their color.
+  const fallbackMove = { pieceId: '', from: { row: 0, col: 0 }, to: { row: 0, col: 0 } };
+  io.to(room.id).emit('move_result', {
+    gameState: room.state,
+    move: fallbackMove,
+    atomic: false,
+  } satisfies MoveResultPayload);
 
   scheduleAIMoveIfNeeded(io, room);
   startMoveTimer(io, room);

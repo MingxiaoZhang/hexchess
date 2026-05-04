@@ -142,9 +142,12 @@ export function createRoom(vsAI = false): Promise<RoomCreatedPayload> {
       store.setRoomId(payload.roomId);
       store.setShareUrl(payload.shareUrl);
       store.setVsAI(payload.vsAI);
-      // Save session immediately — before game_start — so any tab that opens the share
-      // link reconnects as the creator instead of joining as a second player.
-      saveSession({ roomId: payload.roomId, myColor: null, reconnectToken: payload.reconnectToken });
+      // Set myColor immediately from the server response so this tab knows its role
+      // without waiting for game_start. This means the move_result broadcast from
+      // startGameInRoom will correctly trigger isPlaying=true even if game_start
+      // went to a different socket (e.g. creator's second tab that stole the slot).
+      store.setMyColor(payload.yourColor);
+      saveSession({ roomId: payload.roomId, myColor: payload.yourColor, reconnectToken: payload.reconnectToken });
       resolve(payload);
     });
   });

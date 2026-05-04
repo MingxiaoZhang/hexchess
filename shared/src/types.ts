@@ -160,7 +160,8 @@ export interface RoomCreatedPayload {
   roomId: string;
   shareUrl: string;
   vsAI: boolean;
-  reconnectToken: string; // store in localStorage to survive page refresh
+  reconnectToken: string;
+  yourColor: Color; // set immediately so Tab 1 doesn't depend on game_start for role
 }
 
 export interface GameStartPayload {
