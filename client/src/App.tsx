@@ -16,13 +16,14 @@ export function App(): JSX.Element {
     const roomParam = params.get('room')?.toUpperCase() ?? null;
 
     if (session) {
-      // Existing session takes priority — bring the player back to their game.
+      // Always restore the saved session. A stored session means this person
+      // is already in a game (or waiting for one they created). Prevent them
+      // from accidentally joining a different room by ignoring URL params here.
       useGameStore.getState().setReconnecting(true);
       joinRoom(session.roomId, session.reconnectToken).catch(() => {
-        // Room expired or token invalid — wipe the session and fall through.
         clearSession();
         useGameStore.getState().setReconnecting(false);
-        // If there's a different room in the URL, join that as a fresh player.
+        // Session was stale — if URL points to a different room, join that fresh.
         if (roomParam && roomParam !== session.roomId) {
           joinRoom(roomParam).catch(console.error);
         }
@@ -31,7 +32,6 @@ export function App(): JSX.Element {
       // No saved session — fresh join via shared link.
       joinRoom(roomParam).catch(console.error);
     }
-    // No session and no URL param → just show the lobby.
   }, []);
 
   const isPlaying = gameState && myColor && gameState.phase !== 'waiting';

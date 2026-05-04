@@ -94,15 +94,17 @@ export function registerSocketHandlers(io: Server): void {
           console.log(`[room] ${socket.id} reconnected to ${room.id} as ${returning.color}`);
           if (callback) callback();
           // Re-send full game state so the client can resume from where it left off
+          // Always send current state — even if waiting for a second player.
+          // This gives the creator their waiting screen back when they open a
+          // second tab or refresh before the opponent has joined.
+          const payload: GameStartPayload = {
+            gameState: sanitizeStateForPlayer(room.state, returning.color),
+            yourColor: returning.color,
+            vsAI: room.hasAI,
+            reconnectToken: returning.reconnectToken,
+          };
+          socket.emit('game_start', payload);
           if (room.state.phase !== 'waiting') {
-            const payload: GameStartPayload = {
-              gameState: sanitizeStateForPlayer(room.state, returning.color),
-              yourColor: returning.color,
-              vsAI: room.hasAI,
-              reconnectToken: returning.reconnectToken,
-            };
-            socket.emit('game_start', payload);
-            // Tell the opponent the player is back
             const opp = getOpponent(room, socket.id);
             if (opp) io.to(opp.socketId).emit('opponent_reconnected');
           }

@@ -24,7 +24,7 @@ const SESSION_KEY = 'hexchess_session';
 
 interface StoredSession {
   roomId: string;
-  myColor: Color;
+  myColor: Color | null; // null while waiting for opponent to join
   reconnectToken: string;
 }
 
@@ -75,10 +75,9 @@ function attachListeners(sock: Socket): void {
     store.setOpponentConnected(true);
     store.setOpponentDisconnected(false);
     store.setReconnecting(false);
-    // Persist session so the player can reconnect after a page refresh
-    const roomId = store.roomId;
-    if (roomId) {
-      saveSession({ roomId, myColor: payload.yourColor, reconnectToken: payload.reconnectToken });
+    // Update session with the now-known color (overwrites the null placeholder saved at createRoom)
+    if (store.roomId) {
+      saveSession({ roomId: store.roomId, myColor: payload.yourColor, reconnectToken: payload.reconnectToken });
     }
   });
 
@@ -143,12 +142,9 @@ export function createRoom(vsAI = false): Promise<RoomCreatedPayload> {
       store.setRoomId(payload.roomId);
       store.setShareUrl(payload.shareUrl);
       store.setVsAI(payload.vsAI);
-      // Store token now so creator can reconnect even before the opponent joins
-      // (myColor isn't known until game_start, so we'll update the full session then)
-      localStorage.setItem('hexchess_pending_token', JSON.stringify({
-        roomId: payload.roomId,
-        reconnectToken: payload.reconnectToken,
-      }));
+      // Save session immediately — before game_start — so any tab that opens the share
+      // link reconnects as the creator instead of joining as a second player.
+      saveSession({ roomId: payload.roomId, myColor: null, reconnectToken: payload.reconnectToken });
       resolve(payload);
     });
   });

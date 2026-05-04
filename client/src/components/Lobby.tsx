@@ -12,6 +12,10 @@ export function Lobby(): JSX.Element {
   const connected = useGameStore(s => s.connected);
   const reconnecting = useGameStore(s => s.reconnecting);
 
+  // Reconstruct the share URL if roomId is known but shareUrl wasn't set in this tab
+  // (happens when a creator reconnects via token in a second tab)
+  const displayUrl = shareUrl ?? (roomId ? `${window.location.origin}/?room=${roomId}` : null);
+
   async function handleCreate() {
     setLoading(true);
     setError('');
@@ -92,19 +96,15 @@ export function Lobby(): JSX.Element {
           </>
         )}
 
-        {roomId && !shareUrl && (
-          <div style={styles.status}>Joining room…</div>
-        )}
-
-        {shareUrl && (
+        {displayUrl && (
           <div style={styles.waitingSection}>
             <div style={styles.waitingLabel}>Waiting for opponent…</div>
             <div style={styles.roomCode}>{roomId}</div>
             <div style={styles.shareLabel}>Share this link:</div>
-            <div style={styles.shareUrl}>{shareUrl}</div>
+            <div style={styles.shareUrl}>{displayUrl}</div>
             <button
               style={styles.btnSecondary}
-              onClick={() => navigator.clipboard.writeText(shareUrl)}
+              onClick={() => navigator.clipboard.writeText(displayUrl)}
             >
               Copy link
             </button>
