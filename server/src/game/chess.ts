@@ -273,10 +273,26 @@ export function getValidMoves(state: GameState, pieceId: string): Position[] {
   const piece = state.pieces[pieceId];
   if (!piece || piece.color !== state.currentTurn) return [];
 
+  // V3: anchored pieces cannot move at all
+  if (piece.anchorTurnsRemaining > 0) return [];
+
   const pseudoMoves = getPseudoLegalMoves(state, piece);
   return pseudoMoves.filter(to => {
+    const targetPiece = getPieceAt(state, to);
+
+    // V3: cannot capture an anchored enemy piece
+    if (targetPiece && targetPiece.color !== piece.color && targetPiece.anchorTurnsRemaining > 0) {
+      return false;
+    }
+
+    // V3: phantom no-capture — piece cannot capture anything this turn
+    if (piece.phantomNoCapture && targetPiece && targetPiece.color !== piece.color) return false;
+
+    // V3: surge-exposed enemy pieces can be captured even by pinned pieces
+    if (targetPiece && targetPiece.color !== piece.color && targetPiece.surgeExposed) return true;
+
     const sim = simulateMove(state, piece, to);
-    // If own king was caught in an Atomic blast, the move is illegal
+    // Atomic self-destruct: illegal if own king dies in the blast
     const ownKingExists = Object.values(sim.pieces).some(
       p => p.color === piece.color && p.type === 'king'
     );
@@ -497,6 +513,11 @@ export function initGameState(config: GameConfig): GameState {
       id, type, color, position: { row, col },
       upgrades: [], hasMoved: false,
       triggerCount: 0, triggered: false,
+      // V3: ability state — all inactive at start
+      anchorTurnsRemaining: 0,
+      phantomNoCapture: false,
+      berserkExposedTurns: 0,
+      surgeExposed: false,
     };
     board[row][col] = id;
   }
@@ -521,5 +542,48 @@ export function initGameState(config: GameConfig): GameState {
     halfMoveClock: 0,
     capturedPieces: { byWhite: [], byBlack: [] },
     mutationQueue: [],
+    playerAbilities: { white: { hand: [] }, black: { hand: [] } },
   };
+}
+
+// ---- V3: Phantom reachable squares ----
+// Returns squares the piece could reach if the FIRST blocker on each ray is ignored.
+// Only meaningful for sliding pieces (rook, bishop, queen). Others get empty result.
+export function getPhantomReachableSquares(
+  state: Pick<GameState, 'board' | 'pieces'>,
+  piece: Piece
+): Position[] {
+  const dirs: [number, number][] =
+    piece.type === 'rook' ? [[-1,0],[1,0],[0,-1],[0,1]] :
+    piece.type === 'bishop' ? [[-1,-1],[-1,1],[1,-1],[1,1]] :
+    piece.type === 'queen' ? [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]] : [];
+
+  if (dirs.length === 0) return [];
+
+  const result: Position[] = [];
+  for (const [dr, dc] of dirs) {
+    let r = piece.position.row + dr;
+    let c = piece.position.col + dc;
+    let passedBlocker = false;
+
+    while (inBounds(r, c)) {
+      const occupant = getPieceAt(state, { row: r, col: c });
+      if (occupant) {
+        if (!passedBlocker) {
+          // First blocker — skip it and continue (Phantom)
+          passedBlocker = true;
+        } else {
+          // Second blocker — stop
+          if (occupant.color !== piece.color) result.push({ row: r, col: c }); // can capture
+          break;
+        }
+      } else if (passedBlocker) {
+        // Empty square behind the blocker — valid Phantom destination
+        result.push({ row: r, col: c });
+      }
+      r += dr;
+      c += dc;
+    }
+  }
+  return result;
 }

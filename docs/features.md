@@ -25,6 +25,28 @@ Last updated: 2026-05-03
 | Game-over screen | ✅ Complete |
 | Disconnection handling (30s window, forfeit) | ✅ Complete |
 
+## V3 Features
+
+| Feature | Status | Notes |
+|---|---|---|
+| Ability draw system (3 random per player at game start) | ✅ Complete | Without replacement from 6-ability pool |
+| Berserk | ✅ Complete | Auto-triggers after capture; second capture via ability_pending phase; piece exposed 1 opponent move |
+| Long Strike | ✅ Complete | Removes enemy in attack range; piece stays; 1 use; Atomic combo supported |
+| Phantom | ✅ Complete | Moves through first blocker on ray; 1 use; phantomNoCapture next turn |
+| Anchor | ✅ Complete | Piece immune to capture + immovable for 2 owning-player turns; unlimited uses |
+| Echo | ✅ Complete | Copies opponent's last ability; enters echo_pending; 1 use |
+| Surge | ✅ Complete | Pawn moves 1-3 squares forward; surgeExposed for 1 opponent turn; unlimited uses |
+| Ability card UI (up to 5 cards) | ✅ Complete | Shows name, icon, uses remaining; selectable to arm |
+| Ability selection on board | ✅ Complete | Click card → click piece → click target; Berserk uses pending phase |
+| Berserk second capture pending | ✅ Complete | 15s timer, skip button, auto-advance on timeout |
+| Echo pending | ✅ Complete | 15s timer, allows using copied ability |
+| Surge-exposed: any piece can capture | ✅ Complete | Bypasses pin validation in getValidMoves |
+| Anchored: cannot be captured or moved | ✅ Complete | Enforced in getValidMoves |
+| Phantom no-capture next turn | ✅ Complete | Enforced in getValidMoves |
+| AI uses abilities (Berserk on knights near trigger, Surge on pawns near rank 5) | ✅ Complete | |
+| Ability state ticks each turn | ✅ Complete | anchorTurnsRemaining, surgeExposed, berserkExposedTurns, phantomNoCapture |
+| Opponent ability hand shown (hidden cards) | ✅ Complete | sanitizeStateForPlayer hides opponent's card IDs |
+
 ## V2 Features
 
 | Feature | Status | Notes |

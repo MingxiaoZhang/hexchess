@@ -19,8 +19,8 @@ export interface Room {
   moveTimerStartedAt: number | null;
   secondsRemaining: number;
   promotionTimer: ReturnType<typeof setTimeout> | null;
-  mutationTimer: ReturnType<typeof setTimeout> | null; // V2
-  // V2: AI opponent support
+  mutationTimer: ReturnType<typeof setTimeout> | null;
+  abilityPendingTimer: ReturnType<typeof setTimeout> | null; // V3: Berserk/Echo pending
   hasAI: boolean;
   aiColor: Color | null;
 }
@@ -38,6 +38,7 @@ export function createRoom(): Room {
     secondsRemaining: GAME_CONFIG.moveTimerSeconds,
     promotionTimer: null,
     mutationTimer: null,
+    abilityPendingTimer: null,
     hasAI: false,
     aiColor: null,
   };
@@ -91,6 +92,10 @@ export function clearPromotionTimer(room: Room): void {
 
 export function clearMutationTimer(room: Room): void {
   if (room.mutationTimer) { clearTimeout(room.mutationTimer); room.mutationTimer = null; }
+}
+
+export function clearAbilityPendingTimer(room: Room): void {
+  if (room.abilityPendingTimer) { clearTimeout(room.abilityPendingTimer); room.abilityPendingTimer = null; }
 }
 
 export function clearReconnectTimer(player: PlayerInfo): void {

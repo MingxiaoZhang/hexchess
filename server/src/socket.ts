@@ -1,9 +1,11 @@
 import { Server, Socket } from 'socket.io';
 import {
+  AbilityResultPayload,
   AcceptMutationPayload,
   ChoosePromotionPayload,
   Color,
   CreateRoomPayload,
+  DeclineAbilityPendingPayload,
   DeclineMutationPayload,
   GameOverPayload,
   GameStartPayload,
@@ -17,11 +19,13 @@ import {
   PromotionRequiredPayload,
   RoomCreatedPayload,
   TimerUpdatePayload,
+  UseAbilityPayload,
 } from '@hexchess/shared';
 import { GAME_CONFIG } from './config';
 import {
   Room,
   addPlayer,
+  clearAbilityPendingTimer,
   clearMoveTimer,
   clearMutationTimer,
   clearPromotionTimer,
@@ -44,10 +48,12 @@ import {
   handleMutationTimeout,
   handlePromotion,
   handlePromotionTimeout,
+  handleUseAbility,
   sanitizeStateForPlayer,
 } from './game/state';
-import { chooseAIMove } from './game/ai';
+import { chooseAIAction } from './game/ai';
 import { triggerDescription } from './game/triggers';
+import { drawAbilityHand } from './game/abilities';
 
 export function registerSocketHandlers(io: Server): void {
   io.on('connection', (socket: Socket) => {
@@ -172,11 +178,75 @@ export function registerSocketHandlers(io: Server): void {
         return;
       }
 
+      if (outcome.berserkPending) {
+        // Game is in ability_pending/berserk — wait for second capture (handled in make_move)
+        startAbilityPendingTimer(io, room, player.color);
+        return;
+      }
+
       if (outcome.newTriggers.length > 0) {
         processMutationQueue(io, room);
         return;
       }
 
+      scheduleAIMoveIfNeeded(io, room);
+      startMoveTimer(io, room);
+    });
+
+    // ---- Ability use ----
+
+    socket.on('use_ability', ({ roomId, abilityId, pieceId, targetPos }: UseAbilityPayload) => {
+      const room = getRoom(roomId);
+      if (!room) return;
+      const player = findPlayerInRoom(room, socket.id);
+      if (!player) return;
+
+      const outcome = handleUseAbility(room.state, abilityId, pieceId, targetPos as Position | undefined, player.color);
+      if (!outcome) { socket.emit('error_msg', { message: 'Ability not available or invalid target' }); return; }
+
+      room.state = outcome.newState;
+      clearMoveTimer(room);
+
+      io.to(roomId).emit('ability_result', {
+        gameState: room.state,
+        abilityId,
+        ownerColor: player.color,
+        pieceId,
+        targetPos,
+      } satisfies AbilityResultPayload);
+
+      if (outcome.gameOver) { broadcastGameOver(io, room, outcome.winner, outcome.reason ?? 'checkmate'); return; }
+
+      if (outcome.abilityPending) {
+        // Echo or Berserk entered pending — wait for follow-up
+        startAbilityPendingTimer(io, room, player.color);
+        return;
+      }
+
+      if (outcome.promotionNeeded) {
+        const pending = room.state.promotionPending;
+        if (pending) {
+          startPromotionTimer(io, room, player.color);
+          socket.emit('promotion_required', { pieceId: pending.pieceId, upgradeOptions: pending.upgradeOptions } satisfies PromotionRequiredPayload);
+        }
+        return;
+      }
+
+      scheduleAIMoveIfNeeded(io, room);
+      startMoveTimer(io, room);
+    });
+
+    socket.on('decline_ability_pending', ({ roomId }: DeclineAbilityPendingPayload) => {
+      const room = getRoom(roomId);
+      if (!room || room.state.phase !== 'ability_pending') return;
+      const player = findPlayerInRoom(room, socket.id);
+      if (!player) return;
+      if (room.state.abilityPending?.pieceColor !== player.color) return;
+
+      clearAbilityPendingTimer(room);
+      room.state = { ...room.state, phase: 'active', abilityPending: undefined,
+        currentTurn: room.state.currentTurn === player.color ? (player.color === 'white' ? 'black' : 'white') : room.state.currentTurn };
+      emitMoveResult(io, room);
       scheduleAIMoveIfNeeded(io, room);
       startMoveTimer(io, room);
     });
@@ -267,7 +337,16 @@ export function registerSocketHandlers(io: Server): void {
 // ---- Game start ----
 
 function startGameInRoom(io: Server, room: Room): void {
-  room.state = { ...room.state, phase: 'active' };
+  // V3: deal ability hands to both players
+  const handSize = GAME_CONFIG.abilityHandSize;
+  room.state = {
+    ...room.state,
+    phase: 'active',
+    playerAbilities: {
+      white: { hand: drawAbilityHand(handSize) },
+      black: { hand: drawAbilityHand(handSize) },
+    },
+  };
 
   for (const player of room.players) {
     const payload: GameStartPayload = {
@@ -279,9 +358,6 @@ function startGameInRoom(io: Server, room: Room): void {
     io.to(player.socketId).emit('game_start', payload);
   }
 
-  // Also broadcast to the whole socket.io room so any extra connected sockets
-  // (e.g. creator's original tab when a second tab stole the socketId slot)
-  // pick up the active state. Clients only apply this if they already know their color.
   const fallbackMove = { pieceId: '', from: { row: 0, col: 0 }, to: { row: 0, col: 0 } };
   io.to(room.id).emit('move_result', {
     gameState: room.state,
@@ -406,10 +482,31 @@ function triggerAIMove(io: Server, room: Room): void {
   const aiColor = room.aiColor;
   if (!aiColor) return;
 
-  const aiMove = chooseAIMove(room.state, aiColor);
-  if (!aiMove) return; // no legal moves — game over check will handle it
+  const aiAction = chooseAIAction(room.state, aiColor);
+  if (!aiAction) return;
 
-  const outcome = handleMove(room.state, aiMove.pieceId, aiMove.to, aiColor);
+  // AI uses an ability
+  if (aiAction.type === 'ability') {
+    const abilityOutcome = handleUseAbility(room.state, aiAction.abilityId, aiAction.pieceId, aiAction.targetPos, aiColor);
+    if (abilityOutcome) {
+      room.state = abilityOutcome.newState;
+      clearMoveTimer(room);
+      io.to(room.id).emit('ability_result', {
+        gameState: room.state, abilityId: aiAction.abilityId, ownerColor: aiColor,
+        pieceId: aiAction.pieceId, targetPos: aiAction.targetPos,
+      } satisfies AbilityResultPayload);
+      if (abilityOutcome.gameOver) { broadcastGameOver(io, room, abilityOutcome.winner, abilityOutcome.reason ?? 'checkmate'); return; }
+      if (!abilityOutcome.abilityPending) { startMoveTimer(io, room); }
+    } else {
+      // Ability failed — fall back to a normal move
+      const fallback = room.state;
+      void fallback;
+    }
+    return;
+  }
+
+  // AI makes a regular move
+  const outcome = handleMove(room.state, aiAction.pieceId, aiAction.to, aiColor);
   if (!outcome) return;
 
   room.state = outcome.newState;
@@ -519,6 +616,22 @@ function startMutationTimer(io: Server, room: Room, mutation: MutationPending): 
   }, GAME_CONFIG.mutationTimerSeconds * 1000);
 }
 
+// ---- Ability pending timer ----
+
+function startAbilityPendingTimer(io: Server, room: Room, pendingColor: Color): void {
+  clearAbilityPendingTimer(room);
+  room.abilityPendingTimer = setTimeout(() => {
+    if (room.state.phase !== 'ability_pending') return;
+    console.log(`[ability] pending timer expired for ${pendingColor} — auto-skip`);
+    // Auto-skip: advance turn
+    const nextTurn: Color = pendingColor === 'white' ? 'black' : 'white';
+    room.state = { ...room.state, phase: 'active', abilityPending: undefined, currentTurn: nextTurn };
+    emitMoveResult(io, room);
+    scheduleAIMoveIfNeeded(io, room);
+    startMoveTimer(io, room);
+  }, GAME_CONFIG.abilityPendingTimerSeconds * 1000);
+}
+
 // ---- Utilities ----
 
 function emitMoveResult(io: Server, room: Room): void {
@@ -539,6 +652,7 @@ function broadcastGameOver(
   clearMoveTimer(room);
   clearPromotionTimer(room);
   clearMutationTimer(room);
+  clearAbilityPendingTimer(room);
   io.to(room.id).emit('game_over', { winner, reason } satisfies GameOverPayload);
   console.log(`[room] game over ${room.id}: winner=${winner ?? 'draw'} reason=${reason}`);
 }

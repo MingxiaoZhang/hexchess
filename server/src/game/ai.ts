@@ -1,115 +1,213 @@
-// Basic AI opponent. Priority: pursue triggers, capture when available, legal otherwise.
-// Not designed to be a strong chess player — just enough to demonstrate trigger mechanics.
+// Basic AI opponent. Pursues triggers, uses abilities, demonstrates combos.
 
-import { Color, GameState, Piece, Position, PieceType } from '@hexchess/shared';
-import { getValidMoves, isInCheck } from './chess';
+import { AbilityId, Color, GameState, Piece, PieceType, Position } from '@hexchess/shared';
+import { getValidMoves, getAttackSquares } from './chess';
+import { applyAbility } from './abilities';
 
 const PIECE_VALUE: Record<PieceType, number> = {
   pawn: 10, knight: 30, bishop: 30, rook: 50, queen: 90, king: 0,
 };
 
-function scoreMove(
-  state: GameState,
-  piece: Piece,
-  to: Position,
-  aiColor: Color
-): number {
+// ---- Move scoring (V2 trigger pursuit + V3 awareness) ----
+
+function scoreMove(state: GameState, piece: Piece, to: Position, aiColor: Color): number {
   let score = 0;
 
-  // Captures — value the captured piece
   const targetId = state.board[to.row]?.[to.col];
-  if (targetId) {
-    const captured = state.pieces[targetId];
-    score += PIECE_VALUE[captured.type] * 2;
-  }
+  if (targetId) score += PIECE_VALUE[state.pieces[targetId].type] * 2;
 
-  // En passant capture
-  if (
-    piece.type === 'pawn' &&
-    !targetId &&
-    state.enPassantTarget?.row === to.row &&
-    state.enPassantTarget?.col === to.col
-  ) {
+  if (piece.type === 'pawn' && !targetId &&
+      state.enPassantTarget?.row === to.row && state.enPassantTarget?.col === to.col) {
     score += PIECE_VALUE.pawn;
   }
 
-  // PAWN: bonus for advancing past halfway (trigger)
   if (piece.type === 'pawn' && !piece.triggered && piece.triggerCount < 1) {
     const crossedHalfway = aiColor === 'white' ? to.row <= 3 : to.row >= 4;
     if (crossedHalfway) score += 40;
-    else {
-      // Reward general forward progress
-      const forwardBonus = aiColor === 'white'
-        ? piece.position.row - to.row
-        : to.row - piece.position.row;
-      score += forwardBonus * 3;
-    }
+    else score += (aiColor === 'white' ? piece.position.row - to.row : to.row - piece.position.row) * 3;
   }
 
-  // KNIGHT: bonus for captures that advance toward 2-capture trigger
   if (piece.type === 'knight' && !piece.triggered && targetId) {
-    const willComplete = piece.triggerCount + 1 >= 2;
-    score += willComplete ? 50 : 25;
+    score += (piece.triggerCount + 1 >= 2) ? 50 : 25;
   }
 
-  // ROOK: bonus for moving to a file where opponent rook sits (trigger)
   if (piece.type === 'rook' && !piece.triggered && piece.triggerCount < 1) {
-    const opponentRooks = Object.values(state.pieces).filter(
-      p => p.type === 'rook' && p.color !== aiColor
-    );
-    if (opponentRooks.some(r => r.position.col === to.col)) score += 40;
+    if (Object.values(state.pieces).some(p => p.type === 'rook' && p.color !== aiColor && p.position.col === to.col)) score += 40;
   }
 
-  // QUEEN: be aggressive — push toward opponent pieces and checks
   if (piece.type === 'queen' && !piece.triggered) {
-    // Prefer squares closer to opponent's king
-    const opponentKing = Object.values(state.pieces).find(
-      p => p.type === 'king' && p.color !== aiColor
-    );
-    if (opponentKing) {
-      const dist = Math.max(
-        Math.abs(to.row - opponentKing.position.row),
-        Math.abs(to.col - opponentKing.position.col)
-      );
+    const oppKing = Object.values(state.pieces).find(p => p.type === 'king' && p.color !== aiColor);
+    if (oppKing) {
+      const dist = Math.max(Math.abs(to.row - oppKing.position.row), Math.abs(to.col - oppKing.position.col));
       score += Math.max(0, (8 - dist) * 4);
     }
   }
 
-  // Small random tiebreaker so AI doesn't always pick the same move
   score += Math.random() * 3;
-
   return score;
 }
 
 export interface AIMove {
+  type: 'move';
   pieceId: string;
   to: Position;
 }
 
-export function chooseAIMove(state: GameState, aiColor: Color): AIMove | null {
+export interface AIAbilityMove {
+  type: 'ability';
+  abilityId: AbilityId;
+  pieceId?: string;
+  targetPos?: Position;
+  score: number;
+}
+
+export type AIAction = AIMove | AIAbilityMove;
+
+// ---- Ability scoring ----
+
+function scoreAbility(state: GameState, abilityId: AbilityId, aiColor: Color): AIAbilityMove | null {
+  const hand = state.playerAbilities[aiColor].hand;
+  const card = hand.find(c => c.id === abilityId);
+  if (!card) return null;
+  if (card.usesRemaining !== null && card.usesRemaining <= 0) return null;
+
+  switch (abilityId) {
+    case 'surge': {
+      // Use Surge on a pawn close to the halfway trigger line
+      let best: AIAbilityMove | null = null;
+      for (const piece of Object.values(state.pieces)) {
+        if (piece.color !== aiColor || piece.type !== 'pawn' || piece.anchorTurnsRemaining > 0) continue;
+        const dir = aiColor === 'white' ? -1 : 1;
+        const { row, col } = piece.position;
+        // Try surging to rank 5 crossing (row 3 for white, row 4 for black)
+        for (let steps = 3; steps >= 1; steps--) {
+          const targetRow = row + steps * dir;
+          if (targetRow < 0 || targetRow > 7) continue;
+          const crossesHalfway = aiColor === 'white' ? targetRow <= 3 : targetRow >= 4;
+          // Verify clear path
+          let clear = true;
+          for (let s = 1; s <= steps; s++) {
+            if (state.board[row + s * dir]?.[col]) { clear = false; break; }
+          }
+          if (!clear) continue;
+
+          const score = crossesHalfway ? 80 : 20 + steps * 5; // prefer trigger-crossing surge
+          if (!best || score > best.score) {
+            best = { type: 'ability', abilityId: 'surge', pieceId: piece.id, targetPos: { row: targetRow, col }, score };
+          }
+          if (crossesHalfway) break; // found the best
+        }
+      }
+      return best;
+    }
+
+    case 'berserk': {
+      // Use Berserk on a knight that has 1 capture already (one more = trigger mutation)
+      for (const piece of Object.values(state.pieces)) {
+        if (piece.color !== aiColor || piece.type !== 'knight') continue;
+        if (piece.triggerCount < 1) continue; // prefer knight already at 1 capture
+        const moves = getValidMoves(state, piece.id);
+        const captures = moves.filter(m => state.board[m.row]?.[m.col] && state.pieces[state.board[m.row][m.col]!]?.color !== aiColor);
+        if (captures.length > 0) {
+          return { type: 'ability', abilityId: 'berserk', pieceId: piece.id, targetPos: captures[0], score: 90 };
+        }
+      }
+      // Also consider Berserk on any piece that can capture
+      for (const piece of Object.values(state.pieces)) {
+        if (piece.color !== aiColor) continue;
+        const moves = getValidMoves(state, piece.id);
+        const captures = moves.filter(m => state.board[m.row]?.[m.col] && state.pieces[state.board[m.row][m.col]!]?.color !== aiColor);
+        if (captures.length > 0) {
+          return { type: 'ability', abilityId: 'berserk', pieceId: piece.id, targetPos: captures[0], score: 40 };
+        }
+      }
+      return null;
+    }
+
+    case 'long_strike': {
+      // Strike the highest-value enemy piece in range
+      let best: AIAbilityMove | null = null;
+      for (const piece of Object.values(state.pieces)) {
+        if (piece.color !== aiColor) continue;
+        const attacks = getAttackSquares(state, piece);
+        for (const sq of attacks) {
+          const targetId = state.board[sq.row]?.[sq.col];
+          if (!targetId) continue;
+          const target = state.pieces[targetId];
+          if (!target || target.color === aiColor) continue;
+          const score = PIECE_VALUE[target.type] * 3;
+          if (!best || score > best.score) {
+            best = { type: 'ability', abilityId: 'long_strike', pieceId: piece.id, targetPos: sq, score };
+          }
+        }
+      }
+      return best;
+    }
+
+    case 'anchor': {
+      // Anchor a piece that is 1 capture away from its trigger
+      for (const piece of Object.values(state.pieces)) {
+        if (piece.color !== aiColor || piece.anchorTurnsRemaining > 0) continue;
+        if (piece.type === 'knight' && piece.triggerCount === 1) {
+          return { type: 'ability', abilityId: 'anchor', pieceId: piece.id, score: 70 };
+        }
+        if (piece.type === 'queen' && piece.triggerCount === 1) {
+          return { type: 'ability', abilityId: 'anchor', pieceId: piece.id, score: 60 };
+        }
+      }
+      return null;
+    }
+
+    case 'echo': {
+      const opp: Color = aiColor === 'white' ? 'black' : 'white';
+      if (state.playerAbilities[opp].lastUsedAbilityId) {
+        return { type: 'ability', abilityId: 'echo', score: 35 };
+      }
+      return null;
+    }
+
+    case 'phantom':
+      return null; // AI won't use Phantom in V3 (complex targeting)
+
+    default:
+      return null;
+  }
+}
+
+// ---- Main AI decision ----
+
+export function chooseAIAction(state: GameState, aiColor: Color): AIAction | null {
   if (state.currentTurn !== aiColor) return null;
 
-  let bestScore = -Infinity;
-  let bestMove: AIMove | null = null;
+  // Score all available ability moves
+  let bestAbility: AIAbilityMove | null = null;
+  for (const card of state.playerAbilities[aiColor].hand) {
+    if (card.id === '?' as AbilityId) continue; // sanitized
+    const scored = scoreAbility(state, card.id, aiColor);
+    if (scored && (!bestAbility || scored.score > bestAbility.score)) bestAbility = scored;
+  }
 
+  // Score all regular moves
+  let bestMoveScore = -Infinity;
+  let bestMove: AIMove | null = null;
   for (const piece of Object.values(state.pieces)) {
     if (piece.color !== aiColor) continue;
-    const moves = getValidMoves(state, piece.id);
-
-    for (const to of moves) {
+    for (const to of getValidMoves(state, piece.id)) {
       const score = scoreMove(state, piece, to, aiColor);
-      if (score > bestScore) {
-        bestScore = score;
-        bestMove = { pieceId: piece.id, to };
-      }
+      if (score > bestMoveScore) { bestMoveScore = score; bestMove = { type: 'move', pieceId: piece.id, to }; }
     }
   }
 
+  // Pick ability if significantly better than best move
+  if (bestAbility && bestAbility.score > bestMoveScore + 20) return bestAbility;
   return bestMove;
 }
 
-// AI always accepts mutations (immediately, no delay needed).
-export const AI_ALWAYS_ACCEPTS = true;
+// Keep for backward compat (socket.ts uses chooseAIMove in some paths)
+export function chooseAIMove(state: GameState, aiColor: Color): { pieceId: string; to: Position } | null {
+  const action = chooseAIAction(state, aiColor);
+  if (!action || action.type !== 'move') return null;
+  return { pieceId: action.pieceId, to: action.to };
+}
 
-// Suppress unused import
-void isInCheck;
+export const AI_ALWAYS_ACCEPTS = true;

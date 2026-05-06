@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Color, GameState, MutationOutcomePayload, Position, UpgradeConfig } from '@hexchess/shared';
+import { AbilityId, Color, GameState, MutationOutcomePayload, Position, UpgradeConfig } from '@hexchess/shared';
 
 export interface MutationToast {
   pieceType: string;
@@ -35,11 +35,15 @@ export interface GameStore {
   mutationOptions: UpgradeConfig[];
   mutationToast: MutationToast | null; // brief notification shown to both players
 
+  // V3: ability selection (client-side, for UI highlighting)
+  selectedAbility: AbilityId | null;
+  abilitySourcePieceId: string | null; // piece chosen as ability source
+
   // Connection
   connected: boolean;
   opponentConnected: boolean;
   opponentDisconnected: boolean;
-  reconnecting: boolean; // true while attempting to restore a saved session
+  reconnecting: boolean;
 
   // Actions
   setGameState: (gs: GameState) => void;
@@ -58,6 +62,8 @@ export interface GameStore {
   setMutationRequired: (pieceId: string, options: UpgradeConfig[]) => void;
   clearMutation: () => void;
   setMutationToast: (toast: MutationToast | null) => void;
+  setSelectedAbility: (id: AbilityId | null) => void;
+  setAbilitySourcePiece: (id: string | null) => void;
   reset: () => void;
 }
 
@@ -78,6 +84,8 @@ const initialState = {
   mutationPieceId: null,
   mutationOptions: [],
   mutationToast: null,
+  selectedAbility: null,
+  abilitySourcePieceId: null,
   connected: false,
   opponentConnected: false,
   opponentDisconnected: false,
@@ -107,5 +115,7 @@ export const useGameStore = create<GameStore>((set) => ({
   clearMutation: () =>
     set({ mutationPending: false, mutationPieceId: null, mutationOptions: [] }),
   setMutationToast: (toast) => set({ mutationToast: toast }),
+  setSelectedAbility: (id) => set({ selectedAbility: id, abilitySourcePieceId: null }),
+  setAbilitySourcePiece: (id) => set({ abilitySourcePieceId: id }),
   reset: () => set(initialState),
 }));

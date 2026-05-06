@@ -114,7 +114,51 @@
 
 ---
 
-## 2026-05-03 — No client-side move validation for promotion eligibility
+---
+
+## 2026-05-06 — Berserk fires automatically after any capture (not pre-selected)
+
+**Decision:** Berserk triggers automatically after a capture move — the player doesn't pre-arm it. Instead, the game enters ability_pending (berserk) phase if the player has Berserk in their hand and a second capture is available. The card just needs to be in the hand; no explicit activation step before the capture.
+
+**Reasoning:** Pre-arming creates friction ("I must remember to click Berserk before every capture"). Auto-trigger matches the card's flavor ("after capturing... immediately capture again"). The ability_pending phase gives the player a clear 15-second window to choose the second target, with a skip option.
+
+---
+
+## 2026-05-06 — Ability states tick based on who just moved, not turn number
+
+**Decision:** `tickAbilityStates(state, justMoved)` uses the color that just completed a move as the anchor:
+- Owning player just moved → decrement `anchorTurnsRemaining`, reset `phantomNoCapture`
+- Opponent just moved → decrement `berserkExposedTurns`, reset `surgeExposed`
+
+**Reasoning:** Anchor's "2 turns" means 2 of the owning player's turns — decrement when they move. Surge's exposure lasts "one opponent move" — reset when the opponent moves. This asymmetry is natural and matches the design intent without requiring a separate full-turn counter.
+
+---
+
+## 2026-05-06 — Opponent ability hand is sanitized (card IDs hidden, last used visible)
+
+**Decision:** `sanitizeStateForPlayer` replaces opponent ability card IDs with `'?'` before sending to each player. The opponent's `lastUsedAbilityId` remains visible (so players can see what was last used, which is needed for Echo).
+
+**Reasoning:** Players shouldn't know which specific abilities their opponent holds (hidden information). But `lastUsedAbilityId` must be visible so players can understand Echo plays and react to what the opponent has already revealed.
+
+---
+
+## 2026-05-06 — Long Strike + Atomic: explosion happens at target, attacker stays
+
+**Decision:** When a piece with both Long Strike and Atomic upgrades uses Long Strike, the Atomic explosion triggers at the target square. The attacking piece stays in place (it never moved). This is the "Long Strike + mutated piece" combo from the LLD.
+
+**Reasoning:** Long Strike's positional cost is "no territorial gain." Atomic's normal rule kills the attacker, but since the attacker didn't move, only the target square explodes. The attacker survives the Long Strike even with Atomic. This makes the combo especially powerful and matches the LLD's note about it as an intended discovery.
+
+---
+
+## 2026-05-06 — Phantom destination CAN be a capture, but piece can't capture next turn
+
+**Decision:** Phantom allows the piece to move through a blocker and optionally capture at the destination. The `phantomNoCapture` flag applies to the FOLLOWING turn only, not the Phantom move itself.
+
+**Reasoning:** If Phantom couldn't capture at the destination at all, it would only be useful for repositioning. Allowing capture at the destination (after passing through the blocker) makes it a more interesting tactical tool — at the cost of being defensively weak next turn.
+
+---
+
+## 2026-05-06 — No client-side move validation for promotion eligibility
 
 **Decision:** The client accepts all `make_move` submissions to the promotion square. The server is responsible for detecting that the move triggers promotion and entering the promotion phase.
 

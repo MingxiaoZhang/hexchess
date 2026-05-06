@@ -1,8 +1,11 @@
 import { io, Socket } from 'socket.io-client';
 import {
+  AbilityId,
+  AbilityResultPayload,
   AcceptMutationPayload,
   ChoosePromotionPayload,
   Color,
+  DeclineAbilityPendingPayload,
   DeclineMutationPayload,
   GameOverPayload,
   GameStartPayload,
@@ -15,6 +18,7 @@ import {
   PieceType,
   RoomCreatedPayload,
   TimerUpdatePayload,
+  UseAbilityPayload,
 } from '@hexchess/shared';
 import { useGameStore } from '../store/gameStore';
 
@@ -124,6 +128,13 @@ function attachListeners(sock: Socket): void {
     useGameStore.getState().setOpponentDisconnected(true);
   });
 
+  sock.on('ability_result', (payload: AbilityResultPayload) => {
+    useGameStore.getState().setGameState(payload.gameState);
+    useGameStore.getState().setSelectedAbility(null);
+    useGameStore.getState().setAbilitySourcePiece(null);
+    useGameStore.getState().selectPiece(null, []);
+  });
+
   sock.on('opponent_reconnected', () => {
     useGameStore.getState().setOpponentDisconnected(false);
   });
@@ -187,6 +198,19 @@ export function declineMutation(roomId: string, pieceId: string): void {
   useGameStore.getState().clearMutation();
 }
 
+export function useAbility(roomId: string, abilityId: AbilityId, pieceId?: string, targetPos?: Position): void {
+  const payload: UseAbilityPayload = { roomId, abilityId, pieceId, targetPos };
+  getSocket().emit('use_ability', payload);
+  const store = useGameStore.getState();
+  store.setSelectedAbility(null);
+  store.setAbilitySourcePiece(null);
+}
+
+export function declineAbilityPending(roomId: string): void {
+  const payload: DeclineAbilityPendingPayload = { roomId };
+  getSocket().emit('decline_ability_pending', payload);
+}
+
 export function onGameOver(cb: (payload: GameOverPayload) => void): void {
   onGameOverCallback = cb;
 }
@@ -195,5 +219,6 @@ export function onMoveResult(cb: (payload: MoveResultPayload) => void): void {
   onMoveResultCallback = cb;
 }
 
-// Suppress unused type
+// Suppress unused types
 void ((_: Color) => _);
+void ((_: AbilityResultPayload) => _);

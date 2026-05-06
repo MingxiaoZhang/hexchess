@@ -3,13 +3,16 @@
 export type PieceType = 'pawn' | 'rook' | 'knight' | 'bishop' | 'queen' | 'king';
 export type Color = 'white' | 'black';
 
-// Which gameplay event unlocks a mutation offer for this piece.
+// V2: mutation trigger types
 export type TriggerType =
-  | 'pawn_advance'      // pawn crosses the halfway line
-  | 'knight_captures'   // knight accumulates 2 captures
-  | 'bishop_revenge'    // surviving bishop when its partner is captured
-  | 'rook_opposition'   // rook shares a file with an opponent rook
-  | 'queen_checks';     // queen delivers check twice
+  | 'pawn_advance'
+  | 'knight_captures'
+  | 'bishop_revenge'
+  | 'rook_opposition'
+  | 'queen_checks';
+
+// V3: ability identifiers
+export type AbilityId = 'berserk' | 'long_strike' | 'phantom' | 'anchor' | 'echo' | 'surge';
 
 export interface Position {
   row: number; // 0 = rank 8 (black back rank), 7 = rank 1 (white back rank)
@@ -20,7 +23,7 @@ export interface Upgrade {
   id: string;
   name: string;
   description: string;
-  usesRemaining: number | null; // null = unlimited
+  usesRemaining: number | null;
 }
 
 export interface Piece {
@@ -31,11 +34,22 @@ export interface Piece {
   upgrades: Upgrade[];
   hasMoved: boolean;
   // V2: trigger tracking
-  triggerCount: number;  // progress toward this piece's trigger condition
-  triggered: boolean;    // true once the trigger has fired (prevents re-triggering)
+  triggerCount: number;
+  triggered: boolean;
+  // V3: ability effect state
+  anchorTurnsRemaining: number;  // 0 = not anchored; piece can't move or be captured while >0
+  phantomNoCapture: boolean;     // can't capture this turn (used Phantom last turn)
+  berserkExposedTurns: number;  // 0 = normal; can't be Anchored while >0; expires after 1 opponent move
+  surgeExposed: boolean;         // any enemy can capture this pawn regardless of pins; expires after 1 opponent move
 }
 
-export type GamePhase = 'waiting' | 'active' | 'promotion' | 'mutation' | 'complete';
+export type GamePhase =
+  | 'waiting'
+  | 'active'
+  | 'promotion'
+  | 'mutation'
+  | 'ability_pending'  // V3: waiting for player to complete a multi-step ability (Berserk, Echo)
+  | 'complete';
 
 export interface Move {
   pieceId: string;
@@ -66,13 +80,40 @@ export interface PromotionPending {
   upgradeOptions: UpgradeConfig[];
 }
 
-// One entry in the mutation queue — one piece that has earned a mutation offer.
 export interface MutationPending {
   pieceId: string;
   pieceType: PieceType;
   triggerType: TriggerType;
   ownerColor: Color;
-  mutations: UpgradeConfig[]; // options shown in modal (V2: only Atomic)
+  mutations: UpgradeConfig[];
+}
+
+// V3: per-player ability hand
+export interface AbilityCard {
+  id: AbilityId;
+  usesRemaining: number | null; // null = unlimited
+}
+
+export interface PlayerAbilities {
+  hand: AbilityCard[];
+  lastUsedAbilityId?: AbilityId; // tracked for Echo
+  lastUsedTargetPos?: Position;  // tracked for Echo (optional target)
+  lastUsedPieceId?: string;      // tracked for Echo
+}
+
+// V3: pending ability state (game paused while player completes multi-step ability)
+export type AbilityPending =
+  | { type: 'berserk'; pieceId: string; pieceColor: Color; validTargets: Position[] }
+  | { type: 'echo'; copiedAbilityId: AbilityId; pieceColor: Color };
+
+// V3: display config for ability cards (shared between client and server)
+export interface AbilityConfig {
+  id: AbilityId;
+  name: string;
+  description: string;
+  positionalCost: string;
+  tags: string[];
+  maxUses: number | null; // null = unlimited
 }
 
 export interface GameState {
@@ -88,8 +129,10 @@ export interface GameState {
   winner?: Color | null;
   gameOverReason?: 'checkmate' | 'stalemate' | 'timeout' | 'forfeit' | 'disconnect';
   promotionPending?: PromotionPending;
-  // V2: pending mutation queue — game is paused while non-empty
   mutationQueue: MutationPending[];
+  // V3: ability hands (each player only sees their own hand; opponent's is sanitized)
+  playerAbilities: Record<Color, PlayerAbilities>;
+  abilityPending?: AbilityPending;
   lastMove?: Move;
 }
 
@@ -109,7 +152,9 @@ export interface GameConfig {
   upgradePool: UpgradeConfig[];
   promotionUpgradeCount: number;
   reconnectionWindowMs: number;
-  mutationTimerSeconds: number; // V2: how long player has to accept/decline mutation
+  mutationTimerSeconds: number;
+  abilityHandSize: number;       // V3: how many ability cards each player draws
+  abilityPendingTimerSeconds: number; // V3: time for Berserk second capture / Echo
 }
 
 // ---- Socket event payloads: Client → Server ----
@@ -120,7 +165,7 @@ export interface CreateRoomPayload {
 
 export interface JoinRoomPayload {
   roomId: string;
-  reconnectToken?: string; // provided when rejoining after a page refresh
+  reconnectToken?: string;
 }
 
 export interface MakeMovePayload {
@@ -154,6 +199,19 @@ export interface DeclineMutationPayload {
   pieceId: string;
 }
 
+// V3: use an ability card
+export interface UseAbilityPayload {
+  roomId: string;
+  abilityId: AbilityId;
+  pieceId?: string;    // source piece (most abilities)
+  targetPos?: Position; // target square (abilities with a destination)
+}
+
+// V3: skip/decline the current ability_pending (e.g. decline Berserk second capture)
+export interface DeclineAbilityPendingPayload {
+  roomId: string;
+}
+
 // ---- Socket event payloads: Server → Client ----
 
 export interface RoomCreatedPayload {
@@ -161,7 +219,7 @@ export interface RoomCreatedPayload {
   shareUrl: string;
   vsAI: boolean;
   reconnectToken: string;
-  yourColor: Color; // set immediately so Tab 1 doesn't depend on game_start for role
+  yourColor: Color;
 }
 
 export interface GameStartPayload {
@@ -182,7 +240,6 @@ export interface PromotionRequiredPayload {
   upgradeOptions: UpgradeConfig[];
 }
 
-// Sent ONLY to the owning player when their piece's trigger fires.
 export interface MutationAvailablePayload {
   pieceId: string;
   pieceType: PieceType;
@@ -190,7 +247,6 @@ export interface MutationAvailablePayload {
   mutations: UpgradeConfig[];
 }
 
-// Sent to BOTH players — winner's name, etc. (the opponent sees a notification)
 export interface MutationOutcomePayload {
   pieceId: string;
   pieceType: PieceType;
@@ -198,6 +254,15 @@ export interface MutationOutcomePayload {
   mutationId?: string;
   mutationName?: string;
   ownerColor: Color;
+}
+
+// V3: ability result sent to both players
+export interface AbilityResultPayload {
+  gameState: GameState;
+  abilityId: AbilityId;
+  ownerColor: Color;
+  pieceId?: string;
+  targetPos?: Position;
 }
 
 export interface TimerUpdatePayload {

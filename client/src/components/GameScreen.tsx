@@ -1,10 +1,11 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { Color, GameState, Position } from '@hexchess/shared';
 import { useGameStore } from '../store/gameStore';
-import { makeMove, onMoveResult } from '../socket/client';
+import { makeMove, onMoveResult, useAbility } from '../socket/client';
 import { HUD } from './HUD';
 import { PromotionModal } from './PromotionModal';
 import { MutationModal } from './MutationModal';
+import { AbilityHand } from './AbilityHand';
 import { loadPieceImages, renderFrame, boardToCanvas, canvasToBoard } from '../canvas/renderer';
 import { startAnimation } from '../canvas/animations';
 import {
@@ -110,55 +111,73 @@ export function GameScreen({ gameState, myColor }: GameScreenProps): JSX.Element
     return () => cancelAnimationFrame(animFrameRef.current);
   }, [gameState, myColor, selectedPieceId, validMoves]);
 
-  // Click / piece selection handler
+  // Click / piece selection handler — handles normal moves AND ability targeting
   const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const squareSize = canvas.width / 8;
+    const pos = canvasToBoard(e.clientX - rect.left, e.clientY - rect.top, squareSize, myColor);
+    if (pos.row < 0 || pos.row > 7 || pos.col < 0 || pos.col > 7) return;
+
+    const store = useGameStore.getState();
+    const roomId = store.roomId;
+    const selectedAbility = store.selectedAbility;
+    const abilitySourcePieceId = store.abilitySourcePieceId;
+
+    // Berserk second capture (ability_pending phase)
+    if (gameState.phase === 'ability_pending' && gameState.abilityPending?.type === 'berserk') {
+      if (gameState.abilityPending.pieceColor !== myColor) return;
+      const validTargets = gameState.abilityPending.validTargets ?? [];
+      if (validTargets.some(t => t.row === pos.row && t.col === pos.col) && roomId) {
+        const piece = gameState.pieces[gameState.abilityPending.pieceId];
+        if (piece) makeMove(roomId, piece.id, piece.position, pos);
+      }
+      return;
+    }
+
     if (gameState.phase !== 'active') return;
     if (gameState.currentTurn !== myColor) return;
 
-    const rect = canvas.getBoundingClientRect();
-    const cx = e.clientX - rect.left;
-    const cy = e.clientY - rect.top;
-    const squareSize = canvas.width / 8;
+    // Ability mode: click source piece then target
+    if (selectedAbility && selectedAbility !== 'echo') {
+      if (!abilitySourcePieceId) {
+        // Step 1: choose source piece
+        const cellId = gameState.board[pos.row]?.[pos.col];
+        if (cellId && gameState.pieces[cellId]?.color === myColor) {
+          store.setAbilitySourcePiece(cellId);
+          selectPiece(cellId, computeValidMovesClient(gameState, cellId));
+        }
+        return;
+      }
+      // Step 2: choose target
+      if (roomId) useAbility(roomId, selectedAbility, abilitySourcePieceId, pos);
+      selectPiece(null, []);
+      return;
+    }
 
-    const pos = canvasToBoard(cx, cy, squareSize, myColor);
-    if (pos.row < 0 || pos.row > 7 || pos.col < 0 || pos.col > 7) return;
-
-    const roomId = useGameStore.getState().roomId;
-
-    // Clicking on a valid-move square → make the move
+    // Normal move: valid-move target
     if (selectedPieceId) {
       const isValidTarget = validMoves.some(m => m.row === pos.row && m.col === pos.col);
       if (isValidTarget) {
         const piece = gameState.pieces[selectedPieceId];
-        if (piece && roomId) {
-          makeMove(roomId, selectedPieceId, piece.position, pos);
-          selectPiece(null, []);
-        }
+        if (piece && roomId) { makeMove(roomId, selectedPieceId, piece.position, pos); selectPiece(null, []); }
         return;
       }
     }
 
-    // Clicking on a piece
+    // Select a friendly piece
     const cellId = gameState.board[pos.row]?.[pos.col];
     if (cellId) {
       const piece = gameState.pieces[cellId];
       if (piece && piece.color === myColor) {
-        if (selectedPieceId === cellId) {
-          selectPiece(null, []);
-        } else {
-          // Calculate valid moves via a lightweight client-side copy — server is authoritative
-          // but we pre-calculate for highlighting purposes.
-          // On move submission the server validates; invalid moves are rejected silently.
-          const moves = computeValidMovesClient(gameState, cellId);
-          selectPiece(cellId, moves);
-        }
+        if (selectedPieceId === cellId) selectPiece(null, []);
+        else selectPiece(cellId, computeValidMovesClient(gameState, cellId));
         return;
       }
     }
 
-    // Clicking elsewhere deselects
     selectPiece(null, []);
   }, [gameState, myColor, selectedPieceId, validMoves, selectPiece]);
 
@@ -185,6 +204,25 @@ export function GameScreen({ gameState, myColor }: GameScreenProps): JSX.Element
       {/* Side panel */}
       <div style={styles.sidebar}>
         <HUD myColor={myColor} vsAI={vsAI} />
+
+        {/* V3: Ability cards — always visible during the game */}
+        {gameState.playerAbilities && (
+          <>
+            <AbilityHand
+              hand={gameState.playerAbilities[myColor]?.hand ?? []}
+              myColor={myColor}
+              isMyTurn={gameState.currentTurn === myColor && (gameState.phase === 'active' || gameState.phase === 'ability_pending')}
+              roomId={useGameStore.getState().roomId}
+            />
+            <AbilityHand
+              hand={gameState.playerAbilities[myColor === 'white' ? 'black' : 'white']?.hand ?? []}
+              myColor={myColor}
+              isMyTurn={false}
+              roomId={null}
+              isOpponent
+            />
+          </>
+        )}
 
         {gameState.phase === 'complete' && (
           <div style={styles.gameOver}>
