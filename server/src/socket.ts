@@ -51,7 +51,7 @@ import {
   handleUseAbility,
   sanitizeStateForPlayer,
 } from './game/state';
-import { chooseAIAction } from './game/ai';
+import { chooseAIAction, chooseAIMove, resolveAIAbilityPending } from './game/ai';
 import { triggerDescription } from './game/triggers';
 import { drawAbilityHand } from './game/abilities';
 
@@ -496,17 +496,22 @@ function triggerAIMove(io: Server, room: Room): void {
         pieceId: aiAction.pieceId, targetPos: aiAction.targetPos,
       } satisfies AbilityResultPayload);
       if (abilityOutcome.gameOver) { broadcastGameOver(io, room, abilityOutcome.winner, abilityOutcome.reason ?? 'checkmate'); return; }
-      if (!abilityOutcome.abilityPending) { startMoveTimer(io, room); }
-    } else {
-      // Ability failed — fall back to a normal move
-      const fallback = room.state;
-      void fallback;
+      if (abilityOutcome.abilityPending) {
+        // AI entered pending (Berserk or Echo) — resolve it after a short thinking delay
+        setTimeout(() => handleAIAbilityPending(io, room), 400 + Math.random() * 300);
+      } else {
+        startMoveTimer(io, room);
+      }
+      return;
     }
-    return;
+    // Ability failed — fall through to try a normal move instead
   }
 
   // AI makes a regular move
-  const outcome = handleMove(room.state, aiAction.pieceId, aiAction.to, aiColor);
+  const aiMove = aiAction.type === 'move' ? aiAction : chooseAIMove(room.state, aiColor);
+  if (!aiMove) return;
+
+  const outcome = handleMove(room.state, aiMove.pieceId, aiMove.to, aiColor);
   if (!outcome) return;
 
   room.state = outcome.newState;
@@ -520,8 +525,13 @@ function triggerAIMove(io: Server, room: Room): void {
 
   if (outcome.gameOver) { broadcastGameOver(io, room, outcome.winner, outcome.reason ?? 'checkmate'); return; }
 
+  if (outcome.berserkPending) {
+    // AI's capture triggered Berserk pending — resolve the second capture after a short delay
+    setTimeout(() => handleAIAbilityPending(io, room), 400 + Math.random() * 300);
+    return;
+  }
+
   if (outcome.promotionRequired) {
-    // AI always picks queen + first upgrade
     const promotionState = outcome.newState;
     const pending = promotionState.promotionPending;
     if (pending) {
@@ -536,14 +546,64 @@ function triggerAIMove(io: Server, room: Room): void {
         if (promoOutcome.newTriggers.length > 0) { processMutationQueue(io, room); return; }
       }
     }
-    scheduleAIMoveIfNeeded(io, room); // shouldn't be AI's turn again after promoting
-    return; // human's turn now (or mutation pending)
+    scheduleAIMoveIfNeeded(io, room);
+    return;
   }
 
   if (outcome.newTriggers.length > 0) { processMutationQueue(io, room); return; }
 
   startMoveTimer(io, room);
-  // Note: after AI moves it's now human's turn — no need to schedule AI again yet.
+}
+
+// Resolves a Berserk second capture or Echo follow-up for the AI player.
+function handleAIAbilityPending(io: Server, room: Room): void {
+  const aiColor = room.aiColor;
+  if (!aiColor || room.state.phase !== 'ability_pending') return;
+  if (room.state.abilityPending?.pieceColor !== aiColor) return;
+
+  clearAbilityPendingTimer(room);
+
+  const resolution = resolveAIAbilityPending(room.state, aiColor);
+
+  if (resolution.type === 'berserk_capture') {
+    const outcome = handleMove(room.state, resolution.pieceId, resolution.to, aiColor);
+    if (!outcome) {
+      // No valid second capture — skip and end turn
+      room.state = { ...room.state, phase: 'active', abilityPending: undefined,
+        currentTurn: aiColor === 'white' ? 'black' : 'white' };
+      emitMoveResult(io, room);
+      startMoveTimer(io, room);
+      return;
+    }
+    room.state = outcome.newState;
+    io.to(room.id).emit('move_result', {
+      gameState: room.state, move: outcome.move, atomic: outcome.atomic,
+    } satisfies MoveResultPayload);
+    if (outcome.gameOver) { broadcastGameOver(io, room, outcome.winner, outcome.reason ?? 'checkmate'); return; }
+    if (outcome.newTriggers.length > 0) { processMutationQueue(io, room); return; }
+    startMoveTimer(io, room);
+    return;
+  }
+
+  if (resolution.type === 'echo_ability') {
+    const abilityOutcome = handleUseAbility(room.state, resolution.abilityId, resolution.pieceId, resolution.targetPos, aiColor);
+    if (abilityOutcome) {
+      room.state = abilityOutcome.newState;
+      io.to(room.id).emit('ability_result', {
+        gameState: room.state, abilityId: resolution.abilityId, ownerColor: aiColor,
+        pieceId: resolution.pieceId, targetPos: resolution.targetPos,
+      } satisfies AbilityResultPayload);
+      if (abilityOutcome.gameOver) { broadcastGameOver(io, room, abilityOutcome.winner, abilityOutcome.reason ?? 'checkmate'); return; }
+      if (!abilityOutcome.abilityPending) { startMoveTimer(io, room); }
+      return;
+    }
+  }
+
+  // Skip (no valid resolution found)
+  room.state = { ...room.state, phase: 'active', abilityPending: undefined,
+    currentTurn: aiColor === 'white' ? 'black' : 'white' };
+  emitMoveResult(io, room);
+  startMoveTimer(io, room);
 }
 
 // ---- Timer helpers ----

@@ -203,11 +203,55 @@ export function chooseAIAction(state: GameState, aiColor: Color): AIAction | nul
   return bestMove;
 }
 
-// Keep for backward compat (socket.ts uses chooseAIMove in some paths)
+// Keep for backward compat
 export function chooseAIMove(state: GameState, aiColor: Color): { pieceId: string; to: Position } | null {
   const action = chooseAIAction(state, aiColor);
   if (!action || action.type !== 'move') return null;
   return { pieceId: action.pieceId, to: action.to };
+}
+
+// ---- AI pending ability resolution ----
+// Called when the game is in ability_pending and the pending color is the AI.
+
+export type AIAbilityPendingResolution =
+  | { type: 'berserk_capture'; pieceId: string; to: Position }
+  | { type: 'echo_ability'; abilityId: AbilityId; pieceId?: string; targetPos?: Position }
+  | { type: 'skip' };
+
+export function resolveAIAbilityPending(
+  state: GameState,
+  aiColor: Color
+): AIAbilityPendingResolution {
+  const pending = state.abilityPending;
+  if (!pending || pending.pieceColor !== aiColor) return { type: 'skip' };
+
+  if (pending.type === 'berserk') {
+    const validTargets = pending.validTargets;
+    if (!validTargets.length) return { type: 'skip' };
+
+    // Pick highest-value capture target
+    let bestTarget = validTargets[0];
+    let bestValue = -1;
+    for (const target of validTargets) {
+      const targetId = state.board[target.row]?.[target.col];
+      if (targetId) {
+        const p = state.pieces[targetId];
+        const v = p ? (PIECE_VALUE[p.type] ?? 0) : 0;
+        if (v > bestValue) { bestValue = v; bestTarget = target; }
+      }
+    }
+    return { type: 'berserk_capture', pieceId: pending.pieceId, to: bestTarget };
+  }
+
+  if (pending.type === 'echo') {
+    const action = scoreAbility(state, pending.copiedAbilityId, aiColor);
+    if (action) {
+      return { type: 'echo_ability', abilityId: pending.copiedAbilityId, pieceId: action.pieceId, targetPos: action.targetPos };
+    }
+    return { type: 'skip' };
+  }
+
+  return { type: 'skip' };
 }
 
 export const AI_ALWAYS_ACCEPTS = true;

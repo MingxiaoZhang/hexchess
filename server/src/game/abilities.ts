@@ -188,12 +188,14 @@ export function applyBerserkSecondCapture(
   board[targetPos.row][targetPos.col] = pieceId;
   pieces[pieceId] = { ...piece, position: targetPos, hasMoved: true, berserkExposedTurns: 1 };
 
+  const nextTurn: Color = actingColor === 'white' ? 'black' : 'white';
   const newState: GameState = {
     ...state,
     board,
     pieces,
     phase: 'active',
     abilityPending: undefined,
+    currentTurn: nextTurn,
   };
   return { newState, turnEnds: true };
 }
