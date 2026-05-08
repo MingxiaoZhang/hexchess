@@ -26,8 +26,8 @@ import {
   openRoom,
   joinRoom,
   getRuntime,
-} from './game/engine';
-import { getPlayerColor } from './store/types';
+  getPlayerColor,
+} from './game/engine/index';
 
 // Side-effect import: registers the AI runner with the engine
 import './game/ai-runner';

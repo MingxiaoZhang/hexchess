@@ -1,24 +1,18 @@
 // AI execution — calls the same engine functions a human player would.
-// No special AI branches anywhere else in the codebase.
 
 import { Server } from 'socket.io';
 import { EngineContext } from '../store/RoomStore';
 import { RoomRuntime } from '../store/types';
 import { getAIAction } from './ai';
 import {
-  applyMoveAction,
-  applyAbilityAction,
-  applyPromotionAction,
-  applyMutationResponse,
-  registerAIRunner,
-  startAbilityPendingTimer,
-} from './engine';
+  applyMoveAction, applyAbilityAction, applyPromotionAction, applyMutationResponse,
+  registerAIRunner, startAbilityPendingTimer, applyDeclineAbilityPending,
+} from './engine/index';
 
 function shouldAIAct(room: RoomRuntime): boolean {
   if (!room.hasAI || !room.aiColor) return false;
   const state = room.state;
   if (state.phase === 'complete' || state.phase === 'waiting') return false;
-  // AI acts when it's the pending color OR current turn
   if (state.phase === 'ability_pending') return state.abilityPending?.pieceColor === room.aiColor;
   if (state.phase === 'promotion') {
     const pieceColor = state.promotionPending ? state.pieces[state.promotionPending.pieceId]?.color : undefined;
@@ -30,11 +24,8 @@ function shouldAIAct(room: RoomRuntime): boolean {
 
 export function scheduleAITurn(io: Server, ctx: EngineContext, room: RoomRuntime, delayMs = 700): void {
   if (!shouldAIAct(room)) return;
-
   clearTimeout(room.aiTimer ?? undefined);
-  room.aiTimer = setTimeout(() => {
-    executeAITurn(io, ctx, room);
-  }, delayMs + Math.random() * 400);
+  room.aiTimer = setTimeout(() => executeAITurn(io, ctx, room), delayMs + Math.random() * 400);
 }
 
 function executeAITurn(io: Server, ctx: EngineContext, room: RoomRuntime): void {
@@ -44,25 +35,24 @@ function executeAITurn(io: Server, ctx: EngineContext, room: RoomRuntime): void 
   const action = getAIAction(room.state, aiColor);
   if (!action) return;
 
-  // AI goes through the exact same engine functions as a human player
   switch (action.type) {
     case 'move':
       applyMoveAction(io, ctx, room, action.pieceId, action.to, aiColor);
       break;
-
     case 'ability':
       applyAbilityAction(io, ctx, room, action.abilityId, action.pieceId, action.targetPos, aiColor);
       break;
-
     case 'promote':
       applyPromotionAction(io, ctx, room, action.pieceId, action.pieceType, action.upgradeId, aiColor);
       break;
-
     case 'accept_mutation':
       applyMutationResponse(io, ctx, room, true, action.pieceId, action.mutationId, aiColor);
       break;
   }
 }
 
-// Register with engine so processOutcome can schedule AI turns
 registerAIRunner(scheduleAITurn);
+
+// Suppress unused
+void startAbilityPendingTimer;
+void applyDeclineAbilityPending;
