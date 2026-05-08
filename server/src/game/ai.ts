@@ -1,4 +1,5 @@
 // Basic AI opponent. Pursues triggers, uses abilities, demonstrates combos.
+// getAIAction handles ALL game phases — ai-runner.ts calls it and dispatches the result.
 
 import { AbilityId, Color, GameState, Piece, PieceType, Position } from '@hexchess/shared';
 import { getValidMoves, getAttackSquares } from './chess';
@@ -61,7 +62,20 @@ export interface AIAbilityMove {
   score: number;
 }
 
-export type AIAction = AIMove | AIAbilityMove;
+export interface AIPromoteAction {
+  type: 'promote';
+  pieceId: string;
+  pieceType: PieceType;
+  upgradeId: string;
+}
+
+export interface AIAcceptMutationAction {
+  type: 'accept_mutation';
+  pieceId: string;
+  mutationId: string;
+}
+
+export type AIAction = AIMove | AIAbilityMove | AIPromoteAction | AIAcceptMutationAction;
 
 // ---- Ability scoring ----
 
@@ -174,15 +188,47 @@ function scoreAbility(state: GameState, abilityId: AbilityId, aiColor: Color): A
   }
 }
 
-// ---- Main AI decision ----
+// ---- Unified AI decision (handles all game phases) ----
 
-export function chooseAIAction(state: GameState, aiColor: Color): AIAction | null {
-  if (state.currentTurn !== aiColor) return null;
+export function getAIAction(state: GameState, aiColor: Color): AIAction | null {
+  switch (state.phase) {
+    case 'active':
+      if (state.currentTurn !== aiColor) return null;
+      return chooseActiveAction(state, aiColor);
 
+    case 'ability_pending': {
+      const pending = state.abilityPending;
+      if (!pending || pending.pieceColor !== aiColor) return null;
+      const res = resolveAIAbilityPending(state, aiColor);
+      if (res.type === 'berserk_capture') return { type: 'move', pieceId: res.pieceId, to: res.to };
+      if (res.type === 'echo_ability') return { type: 'ability', abilityId: res.abilityId, pieceId: res.pieceId, targetPos: res.targetPos, score: 0 };
+      return null; // skip
+    }
+
+    case 'promotion': {
+      const pp = state.promotionPending;
+      if (!pp) return null;
+      const pieceColor = state.pieces[pp.pieceId]?.color;
+      if (pieceColor !== aiColor) return null;
+      return { type: 'promote', pieceId: pp.pieceId, pieceType: 'queen', upgradeId: pp.upgradeOptions[0]?.id ?? '' };
+    }
+
+    case 'mutation': {
+      const m = state.mutationQueue[0];
+      if (!m || m.ownerColor !== aiColor) return null;
+      return { type: 'accept_mutation', pieceId: m.pieceId, mutationId: m.mutations[0]?.id ?? '' };
+    }
+
+    default:
+      return null;
+  }
+}
+
+function chooseActiveAction(state: GameState, aiColor: Color): AIAction | null {
   // Score all available ability moves
   let bestAbility: AIAbilityMove | null = null;
   for (const card of state.playerAbilities[aiColor].hand) {
-    if (card.id === '?' as AbilityId) continue; // sanitized
+    if ((card.id as string) === '?') continue;
     const scored = scoreAbility(state, card.id, aiColor);
     if (scored && (!bestAbility || scored.score > bestAbility.score)) bestAbility = scored;
   }
@@ -198,17 +244,19 @@ export function chooseAIAction(state: GameState, aiColor: Color): AIAction | nul
     }
   }
 
-  // Pick ability if significantly better than best move
   if (bestAbility && bestAbility.score > bestMoveScore + 20) return bestAbility;
   return bestMove;
 }
 
-// Keep for backward compat
+// Keep for callers that only need a move (backward compat)
 export function chooseAIMove(state: GameState, aiColor: Color): { pieceId: string; to: Position } | null {
-  const action = chooseAIAction(state, aiColor);
+  const action = getAIAction(state, aiColor);
   if (!action || action.type !== 'move') return null;
   return { pieceId: action.pieceId, to: action.to };
 }
+
+// Keep chooseAIAction as alias
+export const chooseAIAction = getAIAction;
 
 // ---- AI pending ability resolution ----
 // Called when the game is in ability_pending and the pending color is the AI.

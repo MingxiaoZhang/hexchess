@@ -4,6 +4,7 @@
 import { AbilityId, AbilityPending, Color, GameState, Piece, Position } from '@hexchess/shared';
 import { ABILITY_CONFIGS, ABILITY_POOL, GAME_CONFIG } from '../config';
 import { getAttackSquares, getPhantomReachableSquares, getValidMoves } from './chess';
+import { withDerivedPhase } from './state';
 
 // ---- Ability draw ----
 
@@ -154,12 +155,9 @@ export function applyBerserk(
   }
 
   // Enter berserk pending for second capture
-  const pendingState: GameState = {
-    ...afterCapture,
-    phase: 'ability_pending',
-    abilityPending: { type: 'berserk', pieceId, pieceColor: actingColor, validTargets: secondMoves },
-  };
-  return { newState: pendingState, turnEnds: false, abilityPending: pendingState.abilityPending };
+  const abilityPending: AbilityPending = { type: 'berserk', pieceId, pieceColor: actingColor, validTargets: secondMoves };
+  const pendingState = withDerivedPhase({ ...afterCapture, abilityPending });
+  return { newState: pendingState, turnEnds: false, abilityPending };
 }
 
 // Resolves the Berserk SECOND capture. Called from state.ts when a make_move arrives in ability_pending/berserk.
@@ -189,14 +187,7 @@ export function applyBerserkSecondCapture(
   pieces[pieceId] = { ...piece, position: targetPos, hasMoved: true, berserkExposedTurns: 1 };
 
   const nextTurn: Color = actingColor === 'white' ? 'black' : 'white';
-  const newState: GameState = {
-    ...state,
-    board,
-    pieces,
-    phase: 'active',
-    abilityPending: undefined,
-    currentTurn: nextTurn,
-  };
+  const newState = withDerivedPhase({ ...state, board, pieces, abilityPending: undefined, currentTurn: nextTurn });
   return { newState, turnEnds: true };
 }
 
@@ -338,12 +329,9 @@ function applyEcho(
 
   const afterConsume = consumeAbility(state, actingColor, 'echo');
 
-  const pendingState: GameState = {
-    ...afterConsume,
-    phase: 'ability_pending',
-    abilityPending: { type: 'echo', copiedAbilityId, pieceColor: actingColor },
-  };
-  return { newState: pendingState, turnEnds: false, abilityPending: pendingState.abilityPending };
+  const abilityPending: AbilityPending = { type: 'echo', copiedAbilityId, pieceColor: actingColor };
+  const pendingState = withDerivedPhase({ ...afterConsume, abilityPending });
+  return { newState: pendingState, turnEnds: false, abilityPending };
 }
 
 // Resolves an Echo: apply the copied ability as a free use.

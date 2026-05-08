@@ -9,6 +9,7 @@ import {
   DeclineMutationPayload,
   GameOverPayload,
   GameStartPayload,
+  GameState,
   JoinRoomPayload,
   MakeMovePayload,
   MoveResultPayload,
@@ -53,6 +54,21 @@ let socket: Socket | null = null;
 let onGameOverCallback: ((payload: GameOverPayload) => void) | null = null;
 let onMoveResultCallback: ((payload: MoveResultPayload) => void) | null = null;
 
+// ---- Anti-entropy: stateVersion gap detection ----
+let lastSeenVersion = -1;
+
+function checkVersion(incoming: number): boolean {
+  if (lastSeenVersion === -1) { lastSeenVersion = incoming; return true; } // first event
+  if (incoming === lastSeenVersion + 1) { lastSeenVersion = incoming; return true; } // in order
+  if (incoming <= lastSeenVersion) { lastSeenVersion = incoming; return true; } // duplicate/replay — accept
+  // Gap detected
+  console.warn(`[sync] gap detected: expected ${lastSeenVersion + 1}, got ${incoming}`);
+  lastSeenVersion = incoming;
+  const roomId = useGameStore.getState().roomId;
+  if (roomId) socket?.emit('request_resync', { roomId });
+  return true; // still apply the state (we already requested resync)
+}
+
 export function getSocket(): Socket {
   if (!socket) {
     socket = io({ path: '/socket.io', transports: ['websocket'] });
@@ -71,24 +87,31 @@ function attachListeners(sock: Socket): void {
     useGameStore.getState().setConnected(false);
   });
 
-  sock.on('game_start', (payload: GameStartPayload) => {
+  sock.on('game_start', (payload: GameStartPayload & { stateVersion?: number }) => {
     const store = useGameStore.getState();
+    if (payload.stateVersion !== undefined) lastSeenVersion = payload.stateVersion;
     store.setGameState(payload.gameState);
     store.setMyColor(payload.yourColor);
     store.setVsAI(payload.vsAI);
     store.setOpponentConnected(true);
     store.setOpponentDisconnected(false);
     store.setReconnecting(false);
-    // Update session with the now-known color (overwrites the null placeholder saved at createRoom)
     if (store.roomId) {
       saveSession({ roomId: store.roomId, myColor: payload.yourColor, reconnectToken: payload.reconnectToken });
     }
   });
 
-  sock.on('move_result', (payload: MoveResultPayload) => {
+  sock.on('move_result', (payload: MoveResultPayload & { stateVersion?: number }) => {
+    if (payload.stateVersion !== undefined) checkVersion(payload.stateVersion);
     useGameStore.getState().setGameState(payload.gameState);
     useGameStore.getState().selectPiece(null, []);
     if (onMoveResultCallback) onMoveResultCallback(payload);
+  });
+
+  // Anti-entropy: full state resync response
+  sock.on('state_full', (payload: { gameState: GameState; stateVersion: number }) => {
+    lastSeenVersion = payload.stateVersion;
+    useGameStore.getState().setGameState(payload.gameState);
   });
 
   sock.on('promotion_required', (payload: { pieceId: string; upgradeOptions: import('@hexchess/shared').UpgradeConfig[] }) => {

@@ -1,6 +1,7 @@
 import {
   AbilityId,
   Color,
+  GamePhase,
   GameState,
   Move,
   MutationPending,
@@ -19,6 +20,24 @@ import {
   applyEchoAbility,
   tickAbilityStates,
 } from './abilities';
+
+// ---- Phase derivation ----
+// Phase is a pure function of the rest of the state. Never set it by hand.
+// Priority (top wins): complete > promotion > ability_pending > mutation > active
+
+export function derivePhase(state: Omit<GameState, 'phase'>): GamePhase {
+  if (state.winner !== undefined)                     return 'complete';
+  if (state.promotionPending)                         return 'promotion';
+  if (state.abilityPending)                           return 'ability_pending';
+  if ((state.mutationQueue ?? []).length > 0)         return 'mutation';
+  return 'active';
+}
+
+export function withDerivedPhase(
+  state: Omit<GameState, 'phase'> & Partial<Pick<GameState, 'phase'>>
+): GameState {
+  return { ...state, phase: derivePhase(state) } as GameState;
+}
 
 // ---- Move handling ----
 
@@ -41,7 +60,7 @@ export function handleMove(
   to: Position,
   actingColor: Color
 ): MoveOutcome | null {
-  // In ability_pending/berserk, allow only the Berserk second capture
+  // Berserk second capture (ability_pending phase)
   if (state.phase === 'ability_pending' && state.abilityPending?.type === 'berserk') {
     if (state.abilityPending.pieceColor !== actingColor) return null;
     const outcome = applyBerserkSecondCapture(state, pieceId, to, actingColor);
@@ -64,7 +83,7 @@ export function handleMove(
   const { newState: afterMove, move, promotionNeeded } = applyMove(state, pieceId, to);
   const tickedState = tickAbilityStates(afterMove, actingColor);
 
-  // Check if Berserk should activate (capturing piece still exists, player has Berserk)
+  // Auto-trigger Berserk if the capturing piece survived and the player has it
   if (move.capturedPieceId && !move.atomic) {
     const capturingPiece = tickedState.pieces[pieceId];
     const hasBerserk = tickedState.playerAbilities[actingColor].hand.some(
@@ -77,11 +96,10 @@ export function handleMove(
         return id && tickedState.pieces[id]?.color !== actingColor;
       });
       if (secondTargets.length > 0) {
-        const berserkState: GameState = {
+        const berserkState = withDerivedPhase({
           ...tickedState,
-          phase: 'ability_pending',
           abilityPending: { type: 'berserk', pieceId, pieceColor: actingColor, validTargets: secondTargets },
-        };
+        });
         return {
           newState: berserkState, move, atomic: false, gameOver: false, winner: null,
           promotionRequired: false, upgradeOptions: [], newTriggers: [], berserkPending: true,
@@ -102,13 +120,13 @@ function finalizeMoveOutcome(
 ): MoveOutcome {
   const { state: afterTriggers, newTriggers } = detectAndUpdateTriggers(prevState, afterMove, move);
 
-  // Atomic king-kill wins immediately
+  // Atomic king-kill: immediate win
   if (atomic) {
     const opp: Color = actingColor === 'white' ? 'black' : 'white';
     const oppKingAlive = Object.values(afterTriggers.pieces).some(p => p.type === 'king' && p.color === opp);
     if (!oppKingAlive) {
       return {
-        newState: { ...afterTriggers, phase: 'complete', winner: actingColor, gameOverReason: 'checkmate' },
+        newState: withDerivedPhase({ ...afterTriggers, winner: actingColor, gameOverReason: 'checkmate' }),
         move, atomic: true, gameOver: true, winner: actingColor, reason: 'checkmate',
         promotionRequired: false, upgradeOptions: [], newTriggers, berserkPending: false,
       };
@@ -120,21 +138,21 @@ function finalizeMoveOutcome(
     const upgradeOptions = drawUpgradeOptions(GAME_CONFIG, GAME_CONFIG.promotionUpgradeCount);
     const pendingQueue = [...afterTriggers.mutationQueue, ...newTriggers];
     return {
-      newState: {
-        ...afterTriggers, phase: 'promotion',
+      newState: withDerivedPhase({
+        ...afterTriggers,
         promotionPending: { pieceId: move.pieceId, position: move.to, upgradeOptions },
         mutationQueue: pendingQueue,
-      },
+      }),
       move, atomic, gameOver: false, winner: null,
       promotionRequired: true, upgradeOptions, newTriggers, berserkPending: false,
     };
   }
 
-  // Mutation triggers
+  // Mutation triggers queued
   const fullQueue = [...afterTriggers.mutationQueue, ...newTriggers];
   if (fullQueue.length > 0) {
     return {
-      newState: { ...afterTriggers, phase: 'mutation', mutationQueue: fullQueue },
+      newState: withDerivedPhase({ ...afterTriggers, mutationQueue: fullQueue }),
       move, atomic, gameOver: false, winner: null,
       promotionRequired: false, upgradeOptions: [], newTriggers, berserkPending: false,
     };
@@ -161,7 +179,6 @@ export function handleUseAbility(
   targetPos: Position | undefined,
   actingColor: Color
 ): AbilityUseOutcome | null {
-  // In echo_pending, the player is using the copied ability
   if (state.phase === 'ability_pending' && state.abilityPending?.type === 'echo') {
     if (state.abilityPending.pieceColor !== actingColor) return null;
     const outcome = applyEchoAbility(state, abilityId, pieceId, targetPos, actingColor);
@@ -174,26 +191,20 @@ export function handleUseAbility(
 
   const outcome = applyAbility(state, abilityId, pieceId, targetPos, actingColor);
   if (!outcome) return null;
-
   return finalizeAbilityOutcome(outcome, actingColor);
 }
 
 function finalizeAbilityOutcome(outcome: AbilityOutcome, actingColor: Color): AbilityUseOutcome {
   if (!outcome.turnEnds) {
-    // Ability entered a pending state (Berserk, Echo) — don't advance turn or check game over
-    return { newState: outcome.newState, gameOver: false, winner: null, promotionNeeded: false, abilityPending: true };
+    return { newState: withDerivedPhase(outcome.newState), gameOver: false, winner: null, promotionNeeded: false, abilityPending: true };
   }
 
   let st = outcome.newState;
-
-  // Tick ability states (turn ends)
   st = tickAbilityStates(st, actingColor);
-
-  // Switch turn
   const nextTurn: Color = actingColor === 'white' ? 'black' : 'white';
   st = { ...st, currentTurn: nextTurn };
 
-  // Check for Surge-caused promotion (pawn just surged to its back rank)
+  // Surge-caused promotion
   const lastTarget = st.playerAbilities[actingColor].lastUsedTargetPos;
   if (lastTarget) {
     const promotionRow = actingColor === 'white' ? 0 : 7;
@@ -205,25 +216,22 @@ function finalizeAbilityOutcome(outcome: AbilityOutcome, actingColor: Color): Ab
       if (movedPiece) {
         const upgradeOptions = drawUpgradeOptions(GAME_CONFIG, GAME_CONFIG.promotionUpgradeCount);
         return {
-          newState: { ...st, phase: 'promotion', promotionPending: { pieceId: movedPiece.id, position: lastTarget, upgradeOptions } },
+          newState: withDerivedPhase({ ...st, promotionPending: { pieceId: movedPiece.id, position: lastTarget, upgradeOptions } }),
           gameOver: false, winner: null, promotionNeeded: true, abilityPending: false,
         };
       }
     }
   }
 
-  // Check game over
-  let gameOver = false;
-  let winner: Color | null = null;
-  let reason: 'checkmate' | 'stalemate' | undefined;
+  let gameOver = false; let winner: Color | null = null; let reason: 'checkmate' | 'stalemate' | undefined;
   if (isCheckmate(st, nextTurn)) { gameOver = true; winner = actingColor; reason = 'checkmate'; }
   else if (isStalemate(st, nextTurn)) { gameOver = true; winner = null; reason = 'stalemate'; }
 
-  const finalState: GameState = gameOver
-    ? { ...st, phase: 'complete', winner, gameOverReason: reason }
-    : { ...st, phase: 'active' };
+  const newState = gameOver
+    ? withDerivedPhase({ ...st, winner, gameOverReason: reason })
+    : withDerivedPhase(st);
 
-  return { newState: finalState, gameOver, winner, reason, promotionNeeded: false, abilityPending: false };
+  return { newState, gameOver, winner, reason, promotionNeeded: false, abilityPending: false };
 }
 
 // ---- Promotion handling ----
@@ -253,21 +261,21 @@ export function handlePromotion(
     ? state.promotionPending.upgradeOptions.find(u => u.id === upgradeId) ?? null
     : null;
 
-  let promoted = applyPromotion(state, pieceId, newType, upgradeConfig);
-  promoted = { ...promoted, phase: 'active', promotionPending: undefined };
+  // Apply promotion and clear the pending marker
+  const promoted = withDerivedPhase({
+    ...applyPromotion(state, pieceId, newType, upgradeConfig),
+    promotionPending: undefined,
+  });
 
-  const pendingTriggers = promoted.mutationQueue;
-  if (pendingTriggers.length > 0) {
-    return { newState: { ...promoted, phase: 'mutation' }, gameOver: false, winner: null, newTriggers: pendingTriggers };
+  // Process any mutation triggers queued during the promotion move
+  if (promoted.mutationQueue.length > 0) {
+    return { newState: withDerivedPhase(promoted), gameOver: false, winner: null, newTriggers: promoted.mutationQueue };
   }
 
   return resolveGameOverPromotion(promoted, actingColor);
 }
 
-export function handlePromotionTimeout(
-  state: GameState,
-  actingColor: Color
-): PromotionOutcome | null {
+export function handlePromotionTimeout(state: GameState, actingColor: Color): PromotionOutcome | null {
   if (!state.promotionPending) return null;
   const { pieceId, upgradeOptions } = state.promotionPending;
   return handlePromotion(state, pieceId, 'queen', upgradeOptions[0]?.id ?? null, actingColor);
@@ -278,8 +286,10 @@ function resolveGameOverPromotion(state: GameState, actingColor: Color): Promoti
   let gameOver = false; let winner: Color | null = null; let reason: 'checkmate' | 'stalemate' | undefined;
   if (isCheckmate(state, nextColor)) { gameOver = true; winner = actingColor; reason = 'checkmate'; }
   else if (isStalemate(state, nextColor)) { gameOver = true; winner = null; reason = 'stalemate'; }
-  const finalState = gameOver ? { ...state, phase: 'complete' as const, winner, gameOverReason: reason } : state;
-  return { newState: finalState, gameOver, winner, reason, newTriggers: [] };
+  return {
+    newState: gameOver ? withDerivedPhase({ ...state, winner, gameOverReason: reason }) : state,
+    gameOver, winner, reason, newTriggers: [],
+  };
 }
 
 // ---- Mutation handling ----
@@ -307,8 +317,7 @@ export function handleMutationAccept(
 
   const newUpgrade = { id: mutationConfig.id, name: mutationConfig.name, description: mutationConfig.description, usesRemaining: null as null };
   const updatedPieces = { ...state.pieces, [pieceId]: { ...piece, upgrades: [...piece.upgrades, newUpgrade] } };
-  const remainingQueue = state.mutationQueue.slice(1);
-  return resolveAfterMutation({ ...state, pieces: updatedPieces, mutationQueue: remainingQueue });
+  return resolveAfterMutation({ ...state, pieces: updatedPieces, mutationQueue: state.mutationQueue.slice(1) });
 }
 
 export function handleMutationDecline(
@@ -327,14 +336,16 @@ export function handleMutationTimeout(state: GameState): MutationOutcomeResult |
 
 function resolveAfterMutation(state: GameState): MutationOutcomeResult {
   const next = state.mutationQueue[0] ?? null;
-  if (next) return { newState: { ...state, phase: 'mutation' }, gameOver: false, winner: null, nextMutation: next };
+  if (next) return { newState: withDerivedPhase(state), gameOver: false, winner: null, nextMutation: next };
 
   const nextColor = state.currentTurn;
   let gameOver = false; let winner: Color | null = null; let reason: 'checkmate' | 'stalemate' | undefined;
   if (isCheckmate(state, nextColor)) { gameOver = true; winner = nextColor === 'white' ? 'black' : 'white'; reason = 'checkmate'; }
   else if (isStalemate(state, nextColor)) { gameOver = true; winner = null; reason = 'stalemate'; }
-  const finalState = gameOver ? { ...state, phase: 'complete' as const, winner, gameOverReason: reason } : { ...state, phase: 'active' as const };
-  return { newState: finalState, gameOver, winner, reason, nextMutation: null };
+  return {
+    newState: gameOver ? withDerivedPhase({ ...state, winner, gameOverReason: reason }) : withDerivedPhase(state),
+    gameOver, winner, reason, nextMutation: null,
+  };
 }
 
 // ---- Game-over resolution ----
@@ -346,26 +357,30 @@ function resolveGameOver(
   let gameOver = false; let winner: Color | null = null; let reason: 'checkmate' | 'stalemate' | undefined;
   if (isCheckmate(state, nextColor)) { gameOver = true; winner = actingColor; reason = 'checkmate'; }
   else if (isStalemate(state, nextColor)) { gameOver = true; winner = null; reason = 'stalemate'; }
-  const finalState = gameOver ? { ...state, phase: 'complete' as const, winner, gameOverReason: reason } : { ...state, phase: 'active' as const };
-  return { newState: finalState, move, atomic, gameOver, winner, reason, promotionRequired: false, upgradeOptions: [], newTriggers, berserkPending: false };
+  const newState = gameOver
+    ? withDerivedPhase({ ...state, winner, gameOverReason: reason })
+    : withDerivedPhase(state);
+  return { newState, move, atomic, gameOver, winner, reason, promotionRequired: false, upgradeOptions: [], newTriggers, berserkPending: false };
 }
 
 // ---- Timeout / disconnect ----
 
 export function applyTimeout(state: GameState, timedOutColor: Color): GameState {
-  return { ...state, phase: 'complete', winner: timedOutColor === 'white' ? 'black' : 'white', gameOverReason: 'timeout' };
+  const winner: Color = timedOutColor === 'white' ? 'black' : 'white';
+  return withDerivedPhase({ ...state, winner, gameOverReason: 'timeout' });
 }
 
 export function applyForfeit(state: GameState, forfeitColor: Color): GameState {
-  return { ...state, phase: 'complete', winner: forfeitColor === 'white' ? 'black' : 'white', gameOverReason: 'forfeit' };
+  const winner: Color = forfeitColor === 'white' ? 'black' : 'white';
+  return withDerivedPhase({ ...state, winner, gameOverReason: 'forfeit' });
 }
 
 export function applyDisconnectWin(state: GameState, disconnectedColor: Color): GameState {
-  return { ...state, phase: 'complete', winner: disconnectedColor === 'white' ? 'black' : 'white', gameOverReason: 'disconnect' };
+  const winner: Color = disconnectedColor === 'white' ? 'black' : 'white';
+  return withDerivedPhase({ ...state, winner, gameOverReason: 'disconnect' });
 }
 
 export function sanitizeStateForPlayer(state: GameState, playerColor: Color): GameState {
-  // Opponent's ability hand is hidden (they see card backs, not which abilities)
   const opponent: Color = playerColor === 'white' ? 'black' : 'white';
   return {
     ...state,
@@ -374,7 +389,7 @@ export function sanitizeStateForPlayer(state: GameState, playerColor: Color): Ga
       [opponent]: {
         ...state.playerAbilities[opponent],
         hand: state.playerAbilities[opponent].hand.map(c => ({ ...c, id: '?' as AbilityId })),
-        lastUsedAbilityId: state.playerAbilities[opponent].lastUsedAbilityId, // opponent can see last used
+        lastUsedAbilityId: state.playerAbilities[opponent].lastUsedAbilityId,
       },
     },
   };
